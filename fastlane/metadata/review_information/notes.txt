@@ -1,0 +1,3 @@
+m-cas is a tape recorder. Hold the cassette on the Deck (or press the red ● key) to record; press it again to stop, then KEEP. The microphone is used only while recording, and location only to name the clip after the place. Everything stays on the device; there is no account.
+
+Tap the cassette to see the tape as a waveform. The EDIT tab trims clips and records over parts of the tape without deleting the originals. The Shelf gear opens settings.

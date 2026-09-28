@@ -71,3 +71,81 @@ platform :ios do
     )
   end
 end
+
+# ---- App Store ----
+
+def api_key_from_env
+  app_store_connect_api_key(key_id: ENV["ASC_KEY_ID"], issuer_id: ENV["ASC_ISSUER_ID"], key_content: ENV["ASC_KEY_P8"], in_house: false)
+end
+
+def marketing_version
+  File.read(File.expand_path("../project.yml", __dir__))[/MARKETING_VERSION:\s*"([^"]+)"/, 1]
+end
+
+# The biggest "Pro Max" simulator on the runner: the 6.9-inch size App Store Connect asks for.
+def screenshot_device
+  require "json"
+  devices = JSON.parse(`xcrun simctl list devices available -j`)["devices"]
+  best = nil
+  devices.each do |runtime, list|
+    v = runtime[/iOS-(\d+)-(\d+)/] ? [$1.to_i, $2.to_i] : nil
+    next unless v
+    list.each do |d|
+      next unless d["name"] =~ /Pro Max/
+      num = d["name"][/iPhone (\d+)/, 1].to_i
+      key = [num, v]
+      best = [key, d["name"]] if best.nil? || (key <=> best[0]) > 0
+    end
+  end
+  best ? best[1] : "iPhone 17 Pro Max"
+end
+
+platform :ios do
+  lane :screenshots do
+    env = app_env
+    capture_screenshots(
+      project: File.expand_path("../#{env['SCHEME']}.xcodeproj", __dir__),
+      scheme: env["SCREEN_SCHEME"],
+      devices: [screenshot_device],
+      languages: ["en-US"],
+      output_directory: File.expand_path("screenshots", __dir__),
+      clear_previous_screenshots: true,
+      override_status_bar: true,
+      skip_open_summary: true,
+      number_of_retries: 1,
+      stop_after_first_error: false
+    )
+  end
+
+  # Metadata, screenshots and (optionally) submission for the newest TestFlight build.
+  lane :release do
+    env = app_env
+    api_key = api_key_from_env
+    version = marketing_version
+    bundle = env["TARGETS"].split(",").first.split(":").last
+    build = latest_testflight_build_number(api_key: api_key, app_identifier: bundle, version: version)
+    shots = File.expand_path("screenshots", __dir__)
+    deliver(
+      api_key: api_key,
+      app_identifier: bundle,
+      app_version: version,
+      build_number: build.to_s,
+      skip_binary_upload: true,
+      metadata_path: File.expand_path("metadata", __dir__),
+      screenshots_path: shots,
+      skip_screenshots: !Dir.exist?(shots),
+      overwrite_screenshots: true,
+      force: true,
+      submit_for_review: ENV["SUBMIT"] == "true",
+      automatic_release: false,
+      precheck_include_in_app_purchases: false,
+      run_precheck_before_submit: false,
+      submission_information: {
+        add_id_info_uses_idfa: false,
+        export_compliance_uses_encryption: false,
+        content_rights_contains_third_party_content: env["THIRD_PARTY_CONTENT"] == "true",
+        content_rights_has_rights: true
+      }
+    )
+  end
+end

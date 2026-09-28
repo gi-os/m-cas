@@ -1,0 +1,45 @@
+name: App Store
+
+# Run by hand. Takes the App Store screenshots on the simulator, uploads the store text in
+# fastlane/metadata and the screenshots, attaches the newest TestFlight build of this
+# version, and — if "submit" is ticked — sends it to App Review.
+on:
+  workflow_dispatch:
+    inputs:
+      submit:
+        description: "Submit for review"
+        type: boolean
+        default: false
+
+concurrency:
+  group: appstore
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 75
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      SUBMIT: ${{ inputs.submit }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: bash ci/select-xcode.sh
+      - name: Generate project
+        run: brew install xcodegen >/dev/null && xcodegen generate
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - name: Screenshots
+        run: bundle exec fastlane screenshots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: fastlane/screenshots
+      - name: Upload to App Store Connect
+        run: bundle exec fastlane release

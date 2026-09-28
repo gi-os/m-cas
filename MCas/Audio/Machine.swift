@@ -104,7 +104,7 @@ final class Machine: ObservableObject {
     private var recCoordinate: CLLocationCoordinate2D?
     private var lastNowPlaying: Double = 0
 
-    let store = TapeStore()
+    let store = Demo.active ? Demo.store() : TapeStore()
     private let engine = AVAudioEngine()
     private var source: AVAudioSourceNode?
     private let head = HeadState()
@@ -147,6 +147,7 @@ final class Machine: ObservableObject {
         if tapes.isEmpty { store.create(name: "First tape"); reloadTapes() }
         let last = UserDefaults.standard.string(forKey: "currentTape")
         load(tapes.firstIndex { $0.id == last } ?? tapes.count - 1)
+        if Demo.active { seek(118) }
 
         ticker = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.tick() }
         setupRemoteCommands()
@@ -339,7 +340,7 @@ final class Machine: ObservableObject {
     func toggleRecording() { recording ? stopRecording() : startRecording() }
 
     func startRecording() {
-        guard !recording, tape != nil else { return }
+        guard !recording, tape != nil, !Demo.active else { return }
         AVAudioApplication.requestRecordPermission { ok in
             DispatchQueue.main.async { if ok { self.beginRecording() } }
         }

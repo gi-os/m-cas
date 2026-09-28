@@ -58,7 +58,10 @@ final class Pane: ObservableObject {
 
     private enum Kind { case none, wind, scroll, paint, hold, scrub }
 
-    init(screen: Screen) { self.screen = screen }
+    init(screen: Screen) {
+        self.screen = screen
+        if Demo.active { deckWave = Demo.flipped; layersMode = Demo.layers; selectedClip = Demo.layers ? 5 : nil }
+    }
 
     /// Canvas pixels are the layout's own coordinates.
     func layoutPoint(_ canvasPoint: CGPoint) -> CGPoint { canvasPoint }
@@ -417,6 +420,9 @@ final class Pane: ObservableObject {
         Pix.rrect(c, sw.minX, sw.minY, sw.width, sw.height, 6, m.keyClicks ? Ink.teal : Ink.dark)
         Pix.circle(c, m.keyClicks ? sw.maxX - 6 : sw.minX + 6, sw.midY, 4, Ink.cream)
         Pix.marquee(c, "\(PlaceBook.entries.count) PLACES YOU'VE NAMED", f.left, kr.maxY + 14, maxW: f.width, Ink.grey, t: t)
+        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        Pix.marquee(c, "M-CAS \(v) · SILKSCREEN FONT BY JASON KOTTKE, SIL OPEN FONT LICENSE", f.left, kr.maxY + 28, maxW: f.width, Ink.blue2, t: t)
+        Pix.marquee(c, "PRIVACY: GI-OS.GITHUB.IO/M-CAS/PRIVACY.HTML", f.left, kr.maxY + 40, maxW: f.width, Ink.blue2, t: t)
         tabs(c)
     }
 

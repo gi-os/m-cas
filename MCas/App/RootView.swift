@@ -5,7 +5,7 @@ import UIKit
 /// window — the Duo's inner display, landscape — the deck stays on the left and the shelf,
 /// clips and label editor share the right. The keyboard never changes the layout.
 struct RootView: View {
-    @StateObject private var main = Pane(screen: .deck)
+    @StateObject private var main = Pane(screen: Demo.active ? Demo.screen : .deck)
     @StateObject private var side = Pane(screen: .clips)
     @ObservedObject private var machine = Machine.shared
     @FocusState private var editingName: Bool

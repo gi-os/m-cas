@@ -8,3 +8,5 @@ fastlane/report.xml
 fastlane/README.md
 vendor/
 .bundle/
+fastlane/screenshots/
+fastlane/test_output/

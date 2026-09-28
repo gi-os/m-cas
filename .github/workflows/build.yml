@@ -9,6 +9,9 @@ on:
     paths-ignore:
       - '**.md'
       - '.github/workflows/check.yml'
+      - '.github/workflows/release.yml'
+      - 'docs/**'
+      - 'fastlane/metadata/**'
   workflow_dispatch:
 
 # One upload at a time per repo; the build number is the run number.

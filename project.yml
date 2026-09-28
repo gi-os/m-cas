@@ -7,7 +7,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.5.0"
+    MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
     TARGETED_DEVICE_FAMILY: "1"
     DEVELOPMENT_TEAM: ""
@@ -85,7 +85,27 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.gios.mcas.tests
+  MCasUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: MCasUITests
+    dependencies:
+      - target: MCas
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.gios.mcas.uitests
+        TEST_TARGET_NAME: MCas
 schemes:
+  MCasScreenshots:
+    build:
+      targets:
+        MCas: all
+        MCasUITests: [test]
+    test:
+      targets:
+        - MCasUITests
   MCas:
     build:
       targets:

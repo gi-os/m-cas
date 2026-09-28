@@ -1,0 +1,6 @@
+:root{--bg:#181830;--ink:#f8f0c8;--muted:#a8a8b8;--accent:#f8d848;--mint:#88d8b0}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 -apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;padding:48px 20px 80px;
+background-image:radial-gradient(#283058 1px,transparent 1px);background-size:4px 4px}
+main{max-width:680px;margin:0 auto;background:var(--bg);padding:8px 0}
+h1,h2,.eyebrow{font-family:"Silkscreen",ui-monospace,Menlo,monospace}h1{font-size:40px;line-height:1.1;margin:0 0 8px;color:var(--accent)}h2{font-size:20px;margin:32px 0 6px;color:var(--mint)}
+p,li{color:var(--muted)}strong{color:var(--ink)}a{color:var(--accent)}.eyebrow{font-size:12px;letter-spacing:.12em;color:var(--mint)}
