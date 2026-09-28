@@ -3,8 +3,9 @@ import SwiftUI
 import AudioToolbox
 
 enum Screen: Int, CaseIterable {
-    case deck, shelf, clips, label
-    var title: String { ["DECK", "SHELF", "CLIPS", "LABEL"][rawValue] }
+    case deck, shelf, clips, label, settings
+    var title: String { ["DECK", "SHELF", "CLIPS", "LABEL", "SETTINGS"][rawValue] }
+    static let tabs: [Screen] = [.deck, .shelf, .clips, .label]
 }
 
 enum Tool: String { case draw, erase, none }
@@ -55,7 +56,7 @@ final class Pane: ObservableObject {
     var tool: Tool = .draw
     private var inkWorking: UIImage?
 
-    private enum Kind { case none, wind, scroll, paint, hold }
+    private enum Kind { case none, wind, scroll, paint, hold, scrub }
 
     init(screen: Screen) { self.screen = screen }
 
@@ -74,12 +75,13 @@ final class Pane: ObservableObject {
             fling *= 0.85
             if abs(fling) < 0.3 { fling = 0 }
         }
-        return canvas.frame(offset: .zero) { c, _ in
+        return canvas.frame(offset: .zero, oled: m.background == .oled) { c, _ in
             switch screen {
             case .deck: drawDeck(c, t)
             case .shelf: drawShelf(c, t)
             case .clips: drawClips(c, t)
             case .label: drawLabel(c, t)
+            case .settings: drawSettings(c, t)
             }
         }
     }
@@ -112,7 +114,7 @@ final class Pane: ObservableObject {
         Pix.fill(c, 0, y, f.w, f.h - y, Ink.hex(0x0c0c18))
         Pix.fill(c, 0, y, f.w, 1, Ink.blue2)
         let slot = f.w / 4
-        for s in Screen.allCases {
+        for s in Screen.tabs {
             let cx = (slot * CGFloat(s.rawValue) + slot / 2).rounded(), on = s == screen
             Pix.text(s.title, cx, y + 6, on ? Ink.yellow : Ink.grey, font: on ? Pix.bold : Pix.regular, align: .center)
             if on { Pix.fill(c, cx - 9, y + 16, 18, 1, Ink.yellow) }
@@ -127,7 +129,7 @@ final class Pane: ObservableObject {
     }
 
     private var headerPill: CGRect { CGRect(x: f.right - 34, y: f.top + 22, width: 34, height: 13) }
-    private var bgPill: CGRect { CGRect(x: f.right - 34 - 4 - 38, y: f.top + 22, width: 38, height: 13) }
+    private var bgPill: CGRect { CGRect(x: f.right - 34 - 4 - 15, y: f.top + 22, width: 15, height: 13) }
 
     // MARK: deck
 
@@ -188,7 +190,10 @@ final class Pane: ObservableObject {
         } else {
             Pix.fill(c, f.left, y, f.width, 9, Ink.blue)
         }
-        y += 17
+        barY = y
+        y += 15
+        drawScrubber(c, y)
+        y += 14
         Pix.text(Pix.clock(m.position), f.left, y, Ink.cream)
         let r = m.rate
         Pix.text((r < 0 ? "-" : "") + String(format: "%.1fX", abs(r)), f.w / 2, y, abs(r) > 1.1 ? Ink.yellow : Ink.mint, align: .center)
@@ -215,6 +220,91 @@ final class Pane: ObservableObject {
 
         drawKeys(c)
         tabs(c)
+    }
+
+    // The scrubber: a track under the tape bar with a knob you drag to any point on the tape.
+    private var barY: CGFloat = 0
+    private var scrubRect: CGRect { CGRect(x: f.left - 4, y: barY - 5, width: f.width + 8, height: 33) }
+
+    private func drawScrubber(_ c: CGContext, _ y: CGFloat) {
+        let tl = m.timeline
+        let fr = CGFloat(tl.fraction(m.position))
+        let kx = f.left + (fr * (f.width - 1)).rounded()
+        Pix.fill(c, f.left, y + 3, f.width, 2, Ink.blue)
+        Pix.fill(c, f.left, y + 3, kx - f.left, 2, Ink.cream)
+        if !tl.isEmpty {
+            for i in 1..<max(1, tl.clips.count) {
+                let tx = f.left + (CGFloat(tl.fraction(tl.start(of: i))) * (f.width - 1)).rounded()
+                Pix.fill(c, tx, y + 1, 1, 2, Ink.grey)
+            }
+        }
+        let grabbing = gesture == .scrub
+        Pix.fill(c, kx - 3, y - 1, 7, 10, Ink.dark)
+        Pix.fill(c, kx - 2, y, 5, 8, grabbing ? Ink.yellow : Ink.cream)
+        Pix.fill(c, kx, y + 2, 1, 4, Ink.dark)
+    }
+
+    private func scrub(to x: CGFloat) {
+        let fr = Double(min(1, max(0, (x - f.left) / max(1, f.width - 1))))
+        m.seek(fr * m.timeline.total)
+    }
+
+    private func drawGear(_ c: CGContext, _ r: CGRect) {
+        Pix.rrect(c, r.minX, r.minY, r.width, r.height, 6, Ink.blue)
+        let cx = r.midX.rounded(), cy = r.midY.rounded()
+        for (dx, dy) in [(0, -4), (0, 4), (-4, 0), (4, 0), (-3, -3), (3, -3), (-3, 3), (3, 3)] {
+            Pix.fill(c, cx + CGFloat(dx) - 1, cy + CGFloat(dy) - 1, 2, 2, Ink.cream)
+        }
+        Pix.circle(c, cx, cy, 3.5, Ink.cream)
+        Pix.circle(c, cx, cy, 1.5, Ink.blue)
+    }
+
+    // MARK: settings
+
+    private func optionRect(_ i: Int) -> CGRect { CGRect(x: f.left, y: f.top + 62 + CGFloat(i) * 26, width: f.width, height: 22) }
+    private var clicksRect: CGRect { CGRect(x: f.left, y: optionRect(2).maxY + 30, width: f.width, height: 22) }
+
+    private func drawSettings(_ c: CGContext, _ t: Double) {
+        Sky.draw(c, t, Ink.navy, Ink.hex(0x202850), Ink.blue, in: f.full)
+        chrome(c, t)
+        Pix.text("SETTINGS", f.left, f.top + 18, Ink.cream, font: Pix.big)
+        pill(c, headerPill, "DONE", Ink.blue2, Ink.cream)
+        Pix.text("BACKGROUND", f.left, f.top + 50, Ink.grey)
+        for (i, b) in Machine.Background.allCases.enumerated() {
+            let r = optionRect(i)
+            let on = m.background == b
+            Pix.rrect(c, r.minX - 1, r.minY - 1, r.width + 2, r.height + 2, 5, on ? Ink.yellow : Ink.dark)
+            Pix.rrect(c, r.minX, r.minY, r.width, r.height, 4, Ink.blue)
+            let sw = CGRect(x: r.minX + 4, y: r.minY + 4, width: 22, height: 14)
+            switch b {
+            case .sky:
+                Pix.vgrad(c, sw, [(0, Ink.hex(0x283870)), (1, Ink.hex(0x141428))])
+                Pix.fill(c, sw.minX + 5, sw.minY + 3, 1, 1, Ink.cream); Pix.fill(c, sw.minX + 15, sw.minY + 8, 1, 1, Ink.yellow)
+            case .black: Pix.fill(c, sw.minX, sw.minY, sw.width, sw.height, Ink.ink)
+            case .oled: Pix.fill(c, sw.minX, sw.minY, sw.width, sw.height, Ink.ink)
+            }
+            Pix.text(b.title, sw.maxX + 6, r.minY + 7, Ink.cream, font: on ? Pix.bold : Pix.regular)
+            let note = b == .sky ? "STARS" : b == .black ? "BLUE-BLACK" : "PIXELS OFF"
+            Pix.text(note, r.maxX - 5, r.minY + 7, Ink.grey, align: .right)
+        }
+        Pix.text("KEYS", f.left, clicksRect.minY - 12, Ink.grey)
+        let kr = clicksRect
+        Pix.rrect(c, kr.minX, kr.minY, kr.width, kr.height, 4, Ink.blue)
+        Pix.text("CLICK SOUND", kr.minX + 6, kr.minY + 7, Ink.cream)
+        let sw = CGRect(x: kr.maxX - 30, y: kr.minY + 5, width: 24, height: 12)
+        Pix.rrect(c, sw.minX, sw.minY, sw.width, sw.height, 6, m.keyClicks ? Ink.teal : Ink.dark)
+        Pix.circle(c, m.keyClicks ? sw.maxX - 6 : sw.minX + 6, sw.midY, 4, Ink.cream)
+        Pix.marquee(c, "\(PlaceBook.entries.count) PLACES YOU'VE NAMED", f.left, kr.maxY + 14, maxW: f.width, Ink.grey, t: t)
+        tabs(c)
+    }
+
+    private func settingsDown(_ p: CGPoint) {
+        if headerPill.insetBy(dx: -4, dy: -4).contains(p) { switchTo(.shelf); return }
+        for (i, b) in Machine.Background.allCases.enumerated() where optionRect(i).contains(p) {
+            m.background = b
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+        if clicksRect.contains(p) { m.keyClicks.toggle() }
     }
 
     private func drawKeys(_ c: CGContext) {
@@ -269,7 +359,7 @@ final class Pane: ObservableObject {
         chrome(c, t)
         Pix.text("SHELF", f.left, f.top + 18, Ink.cream, font: Pix.big)
         if !m.recording { pill(c, headerPill, "+ NEW", Ink.teal, Ink.cream) }
-        pill(c, bgPill, m.blackBackground ? "SKY" : "BLACK", Ink.blue, Ink.cream)
+        drawGear(c, bgPill)
         Pix.marquee(c, "TAP A TAPE TO LOAD IT", f.left, f.top + 40, maxW: f.width, Ink.grey, t: t)
         let h = f.cassetteH
         for slot in shelfLayout() {
@@ -458,6 +548,7 @@ final class Pane: ObservableObject {
             gesture = .scroll; fling = 0
             startRenameTimer(at: p)
         case .label: labelDown(p)
+        case .settings: settingsDown(p)
         }
     }
 
@@ -481,6 +572,8 @@ final class Pane: ObservableObject {
             scrollBy(-dy)
         case .paint:
             paint(from: lastPoint, to: p)
+        case .scrub:
+            scrub(to: p.x)
         default: break
         }
         lastPoint = p
@@ -508,6 +601,8 @@ final class Pane: ObservableObject {
         case .paint:
             if let img = inkWorking { m.setInk(img, save: true) }
             inkWorking = nil
+        case .scrub:
+            UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.5)
         case .none: break
         }
     }
@@ -538,6 +633,12 @@ final class Pane: ObservableObject {
     private func hit(_ p: CGPoint, _ c: CGPoint, _ r: CGFloat) -> Bool { hypot(p.x - c.x, p.y - c.y) < r }
 
     private func deckDown(_ p: CGPoint) {
+        if !m.timeline.isEmpty && !m.recording && scrubRect.contains(p) {
+            gesture = .scrub
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            scrub(to: p.x)
+            return
+        }
         if cas.contains(p) {
             gesture = .wind
             if press.down(at: CACurrentMediaTime(), recording: m.recording) == .stopRecording { m.stopRecording(); press.cancel(); return }
@@ -556,7 +657,7 @@ final class Pane: ObservableObject {
         gesture = .hold
         keyDownAt = CACurrentMediaTime()
         UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 1)
-        AudioServicesPlaySystemSound(1104)
+        if m.keyClicks { AudioServicesPlaySystemSound(1104) }
         switch i {
         case 1: m.togglePlay()
         case 2: m.toggleRecording()
@@ -598,7 +699,7 @@ final class Pane: ObservableObject {
 
     private func shelfDown(_ p: CGPoint) {
         if headerPill.insetBy(dx: -2, dy: -4).contains(p) && !m.recording { m.newTape(); return }
-        if bgPill.insetBy(dx: -2, dy: -4).contains(p) { m.blackBackground.toggle(); return }
+        if bgPill.insetBy(dx: -4, dy: -4).contains(p) { switchTo(.settings); return }
         let h = f.cassetteH
         for slot in shelfLayout().reversed() where p.x >= f.left && p.x <= f.right && p.y >= slot.y && p.y <= slot.y + (slot.front ? h : slot.step) {
             if !m.recording { m.select(slot.index) }

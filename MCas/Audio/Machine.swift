@@ -42,8 +42,18 @@ final class Machine: ObservableObject {
     /// What the hidden text field is renaming: the tape, or one clip's place.
     enum Editing: Equatable { case tape, clip(URL) }
     @Published var editing: Editing = .tape
-    @Published var blackBackground = UserDefaults.standard.bool(forKey: "blackBackground") {
-        didSet { UserDefaults.standard.set(blackBackground, forKey: "blackBackground") }
+    /// Sky (the starry gradient), black (the palette's darkest, a blue-black), or OLED
+    /// (true black, so the pixels switch off).
+    enum Background: String, CaseIterable { case sky, black, oled
+        var title: String { rawValue.uppercased() }
+    }
+    @Published var background = Background(rawValue: UserDefaults.standard.string(forKey: "background") ?? "") ??
+        (UserDefaults.standard.bool(forKey: "blackBackground") ? .black : .sky) {
+        didSet { UserDefaults.standard.set(background.rawValue, forKey: "background") }
+    }
+    var blackBackground: Bool { background != .sky }
+    @Published var keyClicks = UserDefaults.standard.object(forKey: "keyClicks") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(keyClicks, forKey: "keyClicks") }
     }
     private var activity: Activity<RecordingAttributes>?
     private var recPlace = "Somewhere"

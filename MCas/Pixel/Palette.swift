@@ -36,7 +36,7 @@ enum Palette {
         return Int(f * 44.0)
     }
 
-    static func quantize(_ p: UnsafeMutablePointer<UInt8>, width: Int, height: Int) {
+    static func quantize(_ p: UnsafeMutablePointer<UInt8>, width: Int, height: Int, oled: Bool = false) {
         lut.withUnsafeBufferPointer { lut in
             for y in 0..<height {
                 let row = (y & 3) << 2
@@ -47,7 +47,9 @@ enum Palette {
                     let g: Int = min(255, max(0, Int(p[i + 1]) + t)) >> 3
                     let b: Int = min(255, max(0, Int(p[i + 2]) + t)) >> 3
                     let key: Int = (r << 10) | (g << 5) | b
-                    let c = rgb[Int(lut[key])]
+                    let idx = Int(lut[key])
+                    if oled && idx == 0 { p[i] = 0; p[i + 1] = 0; p[i + 2] = 0; p[i + 3] = 255; continue }
+                    let c = rgb[idx]
                     p[i] = c.0; p[i + 1] = c.1; p[i + 2] = c.2; p[i + 3] = 255
                 }
             }
@@ -95,14 +97,14 @@ final class PixelCanvas {
 
     /// `offset` moves the 136×296 layout into place; `draw` gets the full canvas rect in
     /// layout coordinates so backgrounds can reach every edge.
-    func frame(offset: CGPoint, _ draw: (CGContext, CGRect) -> Void) -> CGImage? {
+    func frame(offset: CGPoint, oled: Bool = false, _ draw: (CGContext, CGRect) -> Void) -> CGImage? {
         UIGraphicsPushContext(ctx)
         ctx.saveGState()
         ctx.translateBy(x: offset.x, y: offset.y)
         draw(ctx, CGRect(x: -offset.x, y: -offset.y, width: CGFloat(width), height: CGFloat(height)))
         ctx.restoreGState()
         UIGraphicsPopContext()
-        Palette.quantize(data, width: width, height: height)
+        Palette.quantize(data, width: width, height: height, oled: oled)
         return ctx.makeImage()
     }
 }
