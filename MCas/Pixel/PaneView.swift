@@ -16,7 +16,9 @@ struct PaneView: View {
             let pxW = geo.size.width * scale
             let pxH = geo.size.height * scale
             let st = safeTop * scale, sb = safeBottom * scale
-            let k = max(1, min(floor(pxW / CGFloat(PixelCanvas.W)), floor(max(1, pxH - st - sb) / CGFloat(PixelCanvas.H))))
+            // Whole device pixels per canvas pixel, chosen so the canvas is at least 136 wide and
+            // has room for the layout between the insets.
+            let k = max(1, min(floor(pxW / CGFloat(PixelCanvas.W)), floor(max(1, pxH - st - sb) / 300)))
             let cw = Int(ceil(pxW / k)), ch = Int(ceil(pxH / k))
             let wPt = CGFloat(cw) * k / scale, hPt = CGFloat(ch) * k / scale
             let toCanvas = { (p: CGPoint) in pane.layoutPoint(CGPoint(x: p.x * scale / k, y: p.y * scale / k)) }
