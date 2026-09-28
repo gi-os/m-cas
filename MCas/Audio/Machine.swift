@@ -31,7 +31,19 @@ final class Machine: ObservableObject {
     @Published private(set) var timeline = Timeline(clips: [])
     @Published private(set) var position: Double = 0
     @Published private(set) var rate: Double = 0
-    @Published private(set) var playing = false
+    @Published private(set) var playing = false {
+        didSet {
+            guard playing != oldValue else { return }
+            if playing { wakeAudio(); pausedAt = nil } else { pausedAt = CACurrentMediaTime() }
+            updateNowPlaying()
+        }
+    }
+    private var pausedAt: Double?
+    private var nowPlayingShown = false
+    private var lastNowPlayingClip: Int?
+    private var audioAsleep = false
+    private var artworkKey = ""
+    private var artwork: MPMediaItemArtwork?
     @Published private(set) var recording = false
     @Published private(set) var recSeconds: Double = 0
     @Published private(set) var level: Float = 0
@@ -155,11 +167,16 @@ final class Machine: ObservableObject {
             else if playing { r = 1 }
         }
         if r > 0, head.position >= head.timeline.total - 0.01 { r = 0; if holdRate == nil && scrub.rate(at: now) == nil { playing = false } }
+        if r != 0 && audioAsleep { wakeAudio() }
         head.rate = r
         if rate != r { rate = r }
         let p = head.position
         if abs(p - position) > 0.0005 { position = p }
-        if now - lastNowPlaying > 1 { lastNowPlaying = now; updateNowPlaying() }
+        // Keep the lock screen in step: on every clip change at once, otherwise every few seconds.
+        let ci = clipIndex
+        if ci != lastNowPlayingClip || now - lastNowPlaying > 5 { lastNowPlayingClip = ci; lastNowPlaying = now; updateNowPlaying() }
+        // Paused for half a minute, or run off the end: take it off the lock screen.
+        if nowPlayingShown, !playing, !recording, holdRate == nil, let p = pausedAt, now - p > 30 { clearNowPlaying() }
         if recording {
             recSeconds = Date().timeIntervalSince(recStarted)
             level = levels.level
@@ -203,6 +220,8 @@ final class Machine: ObservableObject {
 
     private func setupRemoteCommands() {
         let c = MPRemoteCommandCenter.shared()
+        c.playCommand.isEnabled = true
+        c.pauseCommand.isEnabled = true
         c.playCommand.addTarget { [weak self] _ in self?.play(); return .success }
         c.pauseCommand.addTarget { [weak self] _ in self?.playing = false; return .success }
         c.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
@@ -210,21 +229,77 @@ final class Machine: ObservableObject {
         c.previousTrackCommand.addTarget { [weak self] _ in self?.skip(-1); return .success }
         c.changePlaybackPositionCommand.addTarget { [weak self] e in
             guard let e = e as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            self?.seek(e.positionTime); return .success
+            self?.seek(e.positionTime); self?.updateNowPlaying(); return .success
         }
     }
 
+    /// Lock screen and Control Center: the clip as the title, the tape as the album, the
+    /// tape's cassette as the artwork. Paused shows paused; nothing playing shows nothing.
     private func updateNowPlaying() {
-        guard let t = tape, !timeline.isEmpty else { MPNowPlayingInfoCenter.default().nowPlayingInfo = nil; return }
+        guard let t = tape, !timeline.isEmpty, !recording, solo == nil else { clearNowPlaying(); return }
+        guard playing || nowPlayingShown else { return }   // never put it up just for a pause
         let clip = clipIndex.map { timeline.clips[$0] }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+        var info: [String: Any] = [
             MPMediaItemPropertyTitle: clip?.name ?? t.name,
-            MPMediaItemPropertyArtist: t.name,
-            MPMediaItemPropertyAlbumTitle: clip.map { Naming.short($0.date) } ?? "m-cas",
+            MPMediaItemPropertyArtist: clip.map { Naming.short($0.date) } ?? "m-cas",
+            MPMediaItemPropertyAlbumTitle: t.name,
             MPMediaItemPropertyPlaybackDuration: timeline.total,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
-            MPNowPlayingInfoPropertyPlaybackRate: playing ? rate : 0
+            MPNowPlayingInfoPropertyPlaybackRate: playing ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue
         ]
+        if let art = artwork(for: t) { info[MPMediaItemPropertyArtwork] = art }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        nowPlayingShown = true
+    }
+
+    private func clearNowPlaying() {
+        guard nowPlayingShown else { return }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        nowPlayingShown = false
+        pausedAt = nil
+        sleepAudio()
+    }
+
+    /// Letting go of the audio session is what makes iOS drop the player from the lock
+    /// screen. It's taken back the moment you press play.
+    private func sleepAudio() {
+        guard !audioAsleep, !recording, !playing else { return }
+        engine.pause()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        audioAsleep = true
+    }
+
+    private func wakeAudio() {
+        guard audioAsleep else { return }
+        try? AVAudioSession.sharedInstance().setActive(true)
+        try? engine.start()
+        audioAsleep = false
+    }
+
+    /// The tape on the shelf, drawn by the same pixel renderer, blown up without smoothing.
+    private func artwork(for t: TapeInfo) -> MPMediaItemArtwork? {
+        let key = "\(t.id)|\(t.label.line)|\(inks[t.id]?.hash ?? 0)|\(background.rawValue)"
+        if key == artworkKey, let a = artwork { return a }
+        let canvas = PixelCanvas(width: 128, height: 128)
+        let frac = timeline.fraction(position)
+        guard let cg = canvas.frame(offset: .zero, oled: background == .oled, { c, full in
+            Sky.draw(c, 0, Ink.hex(0x283870), Ink.hex(0x141428), Ink.hex(0x1c2c40), in: full)
+            Pix.glow(c, CGPoint(x: 64, y: 64), 70, Ink.teal.withAlphaComponent(0.5))
+            Cassette.draw(c, 8, 31, 112, 72, name: t.name, label: t.label, ink: self.inks[t.id], fraction: frac, rot: 0.6)
+        }) else { return nil }
+        let size = CGSize(width: 768, height: 768)
+        let fmt = UIGraphicsImageRendererFormat(); fmt.scale = 1
+        let img = UIGraphicsImageRenderer(size: size, format: fmt).image { r in
+            r.cgContext.interpolationQuality = .none
+            r.cgContext.translateBy(x: 0, y: size.height); r.cgContext.scaleBy(x: 1, y: -1)
+            r.cgContext.draw(cg, in: CGRect(origin: .zero, size: size))
+        }
+        let art = MPMediaItemArtwork(boundsSize: size) { _ in img }
+        artworkKey = key
+        artwork = art
+        return art
     }
 
     // MARK: recording
@@ -240,6 +315,7 @@ final class Machine: ObservableObject {
 
     private func beginRecording() {
         guard !recording, let tape else { return }
+        wakeAudio()
         setSolo(nil)
         playing = false
         head.rate = 0
@@ -268,6 +344,7 @@ final class Machine: ObservableObject {
         recStarted = date
         recording = true
         recSeconds = 0
+        clearNowPlaying()
         recPlace = "Finding where you are"
         recCoordinate = nil
         startActivity(tape: tape, started: date)
