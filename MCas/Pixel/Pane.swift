@@ -112,7 +112,7 @@ final class Pane: ObservableObject {
 
     private func tabs(_ c: CGContext) {
         let y = f.tabTop
-        Pix.fill(c, 0, y, f.w, f.h - y, Ink.hex(0x0c0c18))
+        Pix.fill(c, 0, y, f.w, f.h - y, m.blackBackground ? Ink.ink : Ink.hex(0x0c0c18))
         Pix.fill(c, 0, y, f.w, 1, Ink.blue2)
         let slot = f.w / CGFloat(Screen.tabs.count)
         for (n, s) in Screen.tabs.enumerated() {
@@ -149,7 +149,7 @@ final class Pane: ObservableObject {
 
     private func drawDeck(_ c: CGContext, _ t: Double) {
         Sky.draw(c, t, Ink.hex(0x283870), Ink.hex(0x141428), Ink.hex(0x1c2c40), in: f.full)
-        Pix.glow(c, CGPoint(x: cas.midX, y: cas.midY), f.w * 0.6, Ink.teal.withAlphaComponent(0.6))
+        if !m.blackBackground { Pix.glow(c, CGPoint(x: cas.midX, y: cas.midY), f.w * 0.6, Ink.teal.withAlphaComponent(0.6)) }
         chrome(c, t)
         guard let tape = m.tape else { return }
         let top = f.top
@@ -229,24 +229,64 @@ final class Pane: ObservableObject {
 
     // The scrubber: a track under the tape bar with a knob you drag to any point on the tape.
     private var barY: CGFloat = 0
-    private var scrubRect: CGRect { CGRect(x: f.left - 4, y: barY - 5, width: f.width + 8, height: 33) }
+    private var scrubRect: CGRect { CGRect(x: f.left - 4, y: barY + 11, width: f.width + 8, height: 18) }
+
+    /// The shuttle: its own control, not a map of the tape. Push the knob left or right and
+    /// the tape winds that way, faster the further you push, until you let go; then the knob
+    /// springs back to the middle.
+    private var shuttleOffset: CGFloat = 0
+    private var shuttleStartX: CGFloat = 0
+    private var shuttleStep = 0
+    private var shuttleMax: CGFloat { max(20, (f.width / 2 - 14).rounded()) }
 
     private func drawScrubber(_ c: CGContext, _ y: CGFloat) {
-        let tl = m.timeline
-        let fr = CGFloat(tl.fraction(m.position))
-        let kx = f.left + (fr * (f.width - 1)).rounded()
-        Pix.fill(c, f.left, y + 3, f.width, 2, Ink.blue)
-        Pix.fill(c, f.left, y + 3, kx - f.left, 2, Ink.cream)
-        if !tl.isEmpty {
-            for i in 1..<max(1, tl.segments.count) {
-                let tx = f.left + (CGFloat(tl.fraction(tl.start(of: i))) * (f.width - 1)).rounded()
-                Pix.fill(c, tx, y + 1, 1, 2, Ink.grey)
-            }
+        let cx = (f.left + f.width / 2).rounded()
+        let held = gesture == .scrub
+        Pix.fill(c, f.left + 12, y + 3, f.width - 24, 2, Ink.blue)
+        // Speed marks, denser toward the ends.
+        for k in 1...4 {
+            let d = (shuttleMax * CGFloat(k) / 4).rounded()
+            Pix.fill(c, cx - d, y + (k == 4 ? 0 : 2), 1, k == 4 ? 8 : 4, Ink.blue2)
+            Pix.fill(c, cx + d, y + (k == 4 ? 0 : 2), 1, k == 4 ? 8 : 4, Ink.blue2)
         }
-        let grabbing = gesture == .scrub
-        Pix.fill(c, kx - 3, y - 1, 7, 10, Ink.dark)
-        Pix.fill(c, kx - 2, y, 5, 8, grabbing ? Ink.yellow : Ink.cream)
-        Pix.fill(c, kx, y + 2, 1, 4, Ink.dark)
+        Pix.fill(c, cx, y + 1, 1, 6, Ink.grey)
+        let arrow: UIColor = held ? Ink.yellow : Ink.grey
+        Pix.poly(c, [CGPoint(x: f.left, y: y + 4), CGPoint(x: f.left + 5, y: y), CGPoint(x: f.left + 5, y: y + 8)], shuttleOffset < 0 ? arrow : Ink.blue2)
+        Pix.poly(c, [CGPoint(x: f.left + 5, y: y + 4), CGPoint(x: f.left + 10, y: y), CGPoint(x: f.left + 10, y: y + 8)], shuttleOffset < 0 ? arrow : Ink.blue2)
+        Pix.poly(c, [CGPoint(x: f.right, y: y + 4), CGPoint(x: f.right - 5, y: y), CGPoint(x: f.right - 5, y: y + 8)], shuttleOffset > 0 ? arrow : Ink.blue2)
+        Pix.poly(c, [CGPoint(x: f.right - 5, y: y + 4), CGPoint(x: f.right - 10, y: y), CGPoint(x: f.right - 10, y: y + 8)], shuttleOffset > 0 ? arrow : Ink.blue2)
+        let kx = cx + shuttleOffset.rounded()
+        if held && shuttleOffset != 0 {
+            let a = min(cx, kx), b = max(cx, kx)
+            Pix.fill(c, a, y + 3, b - a, 2, Ink.yellow)
+        }
+        Pix.fill(c, kx - 4, y - 2, 9, 12, Ink.dark)
+        Pix.fill(c, kx - 3, y - 1, 7, 10, held ? Ink.yellow : Ink.cream)
+        Pix.fill(c, kx - 1, y + 1, 1, 6, Ink.dark); Pix.fill(c, kx + 1, y + 1, 1, 6, Ink.dark)
+    }
+
+    private func shuttle(to x: CGFloat) {
+        shuttleOffset = max(-shuttleMax, min(shuttleMax, x - shuttleStartX))
+        let mag = abs(shuttleOffset) / shuttleMax
+        guard abs(shuttleOffset) >= 3 else {
+            m.holdRate = nil
+            if shuttleStep != 0 { shuttleStep = 0; haptic.selectionChanged() }
+            return
+        }
+        // 1x at a nudge, 8x at the end, in steps you can feel.
+        let speeds: [Double] = [1, 2, 4, 8]
+        let step = min(speeds.count - 1, Int(mag * CGFloat(speeds.count)))
+        let dir: Double = shuttleOffset > 0 ? 1 : -1
+        m.holdRate = dir * speeds[step]
+        let signed = (step + 1) * Int(dir)
+        if signed != shuttleStep { shuttleStep = signed; UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+    }
+
+    private func shuttleRelease() {
+        m.holdRate = nil
+        shuttleOffset = 0
+        shuttleStep = 0
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.6)
     }
 
     /// Horizontal drag as wheel notches, BrightRecorder's Scrub: the tape winds at the speed
@@ -433,7 +473,7 @@ final class Pane: ObservableObject {
     private func scrollBy(_ dy: CGFloat) { m.seek(yToPos(posToY(m.position) + dy)) }
 
     private func drawClips(_ c: CGContext, _ t: Double) {
-        let bg = Ink.hex(0x141428)
+        let bg = m.blackBackground ? Ink.ink : Ink.hex(0x141428)
         Sky.draw(c, t, bg, Ink.navy, bg, in: f.full)
         chrome(c, t)
         guard let tape = m.tape else { return }
@@ -596,7 +636,7 @@ final class Pane: ObservableObject {
     }
 
     private func drawEdit(_ c: CGContext, _ t: Double) {
-        let bg = Ink.hex(0x141428)
+        let bg = m.blackBackground ? Ink.ink : Ink.hex(0x141428)
         Sky.draw(c, t, bg, Ink.navy, bg, in: f.full)
         chrome(c, t)
         guard let tape = m.tape else { return }
@@ -888,7 +928,7 @@ final class Pane: ObservableObject {
         case .paint:
             paint(from: lastPoint, to: p)
         case .scrub:
-            if screen == .edit { editMove(p) } else { windBy(p.x - lastPoint.x, pixelsPerNotch: 3) }
+            if screen == .edit { editMove(p) } else { shuttle(to: p.x) }
         default: break
         }
         lastPoint = p
@@ -917,7 +957,7 @@ final class Pane: ObservableObject {
             if let img = inkWorking { m.setInk(img, save: true) }
             inkWorking = nil
         case .scrub:
-            if screen == .edit { editUp(p) } else { UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.5) }
+            if screen == .edit { editUp(p) } else { shuttleRelease() }
         case .none: break
         }
     }
@@ -950,8 +990,9 @@ final class Pane: ObservableObject {
 
     private func deckDown(_ p: CGPoint) {
         if !m.timeline.isEmpty && !m.recording && scrubRect.contains(p) {
-            // Same as a hand on the reel: drag to wind at the speed you move, and hear it.
             gesture = .scrub
+            shuttleStartX = p.x
+            shuttleOffset = 0
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             return
         }

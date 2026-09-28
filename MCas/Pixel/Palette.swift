@@ -42,6 +42,15 @@ enum Palette {
                 let row = (y & 3) << 2
                 for x in 0..<width {
                     let i = (y * width + x) * 4
+                    // A flat palette color stays exactly itself: dither only what sits between
+                    // colors, so solid fills (and OLED black) have no stray pixels.
+                    let key0: Int = ((Int(p[i]) >> 3) << 10) | ((Int(p[i + 1]) >> 3) << 5) | (Int(p[i + 2]) >> 3)
+                    let exact = rgb[Int(lut[key0])]
+                    if exact.0 == p[i] && exact.1 == p[i + 1] && exact.2 == p[i + 2] {
+                        if oled && lut[key0] == 0 { p[i] = 0; p[i + 1] = 0; p[i + 2] = 0 }
+                        p[i + 3] = 255
+                        continue
+                    }
                     let t: Int = bayer[row | (x & 3)]
                     let r: Int = min(255, max(0, Int(p[i]) + t)) >> 3
                     let g: Int = min(255, max(0, Int(p[i + 1]) + t)) >> 3
