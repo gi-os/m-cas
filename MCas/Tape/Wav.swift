@@ -53,11 +53,13 @@ struct WavHeader: Equatable {
 
 /// A WAV file mapped into memory, read one sample at a time by the tape head.
 final class MappedWav {
+    let url: URL
     let header: WavHeader
     private let base: UnsafeRawPointer
     private let size: Int
 
     init?(url: URL) {
+        self.url = url
         let fd = open(url.path, O_RDONLY)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
@@ -74,6 +76,25 @@ final class MappedWav {
     deinit { munmap(UnsafeMutableRawPointer(mutating: base), size) }
 
     var seconds: Double { header.seconds }
+
+    /// Loudest sample per bin, 0...1, for waveform drawing. Samples a few dozen frames per
+    /// bin rather than all of them, so an hour of audio takes a moment, not a minute.
+    func peaks(perSecond: Double) -> [Float] {
+        let sr = Double(header.sampleRate)
+        guard sr > 0, header.frames > 0 else { return [] }
+        let perBin = max(1, Int(sr / perSecond))
+        let bins = header.frames / perBin + 1
+        let stride = max(1, perBin / 48)
+        var out = [Float](repeating: 0, count: bins)
+        for b in 0..<bins {
+            var m: Float = 0
+            var f = b * perBin
+            let end = min(header.frames, f + perBin)
+            while f < end { let v = abs(raw(f)); if v > m { m = v }; f += stride }
+            out[b] = m
+        }
+        return out
+    }
 
     /// First channel at a time in seconds, linearly interpolated.
     @inline(__always) func sample(at seconds: Double) -> Float {

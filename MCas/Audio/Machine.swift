@@ -56,6 +56,17 @@ final class Machine: ObservableObject {
         didSet { UserDefaults.standard.set(keyClicks, forKey: "keyClicks") }
     }
     private var activity: Activity<RecordingAttributes>?
+    /// Where ● records over the tape. Nil: record onto the end.
+    @Published var mark: Double?
+    /// Trims and takes for the tape on the machine.
+    @Published private(set) var edits = Edits()
+    /// Waveform peaks per clip file: one value per 20 ms, 0...1.
+    @Published private(set) var peaks: [URL: [Float]] = [:]
+    static let peaksPerSecond = 50.0
+    /// Playing one clip's whole original file (the editor's layers view), or nil.
+    @Published private(set) var solo: Int?
+    private var mappedAll: [MappedWav] = []
+    private var recTakeAt: Double?
     private var recPlace = "Somewhere"
     private var recCoordinate: CLLocationCoordinate2D?
     private var lastNowPlaying: Double = 0
@@ -143,7 +154,7 @@ final class Machine: ObservableObject {
             else if let h = holdRate { r = h }
             else if playing { r = 1 }
         }
-        if r > 0, head.position >= timeline.total - 0.01 { r = 0; if holdRate == nil && scrub.rate(at: now) == nil { playing = false } }
+        if r > 0, head.position >= head.timeline.total - 0.01 { r = 0; if holdRate == nil && scrub.rate(at: now) == nil { playing = false } }
         head.rate = r
         if rate != r { rate = r }
         let p = head.position
@@ -159,13 +170,13 @@ final class Machine: ObservableObject {
 
     func togglePlay() {
         if recording { stopRecording(); return }
-        guard !timeline.isEmpty else { return }
-        if !playing, position >= timeline.total - 0.05 { seek(0) }
+        guard !head.timeline.isEmpty else { return }
+        if !playing, position >= head.timeline.total - 0.05 { seek(0) }
         playing.toggle()
     }
 
     func seek(_ t: Double) {
-        let c = min(max(0, t), timeline.total)
+        let c = min(max(0, t), head.timeline.total)
         head.position = c
         position = c
     }
@@ -177,11 +188,11 @@ final class Machine: ObservableObject {
     /// A tap on ◀◀ or ▶▶: back to the start of this clip (or the one before, if you're
     /// already near its start), or on to the next clip.
     func skip(_ dir: Int) {
-        guard let i = timeline.clipIndex(at: position) else { return }
+        guard let i = timeline.segmentIndex(at: position) else { return }
         if dir < 0 {
             let start = timeline.start(of: i)
             seek(position - start > 2 || i == 0 ? start : timeline.start(of: i - 1))
-        } else if i + 1 < timeline.clips.count {
+        } else if i + 1 < timeline.segments.count {
             seek(timeline.start(of: i + 1))
         } else {
             seek(timeline.total)
@@ -229,8 +240,10 @@ final class Machine: ObservableObject {
 
     private func beginRecording() {
         guard !recording, let tape else { return }
+        setSolo(nil)
         playing = false
         head.rate = 0
+        recTakeAt = mark
         let date = Date()
         let url = store.newClipURL(in: tape, date: date)
         let e = AVAudioEngine()
@@ -292,12 +305,110 @@ final class Machine: ObservableObject {
         recording = false
         endActivity()
         let oldTotal = timeline.total
+        let took = recSeconds
         if let url = recURL {
             recURL = nil
+            // Recorded over the tape at the mark: note where, so it covers what was there.
+            if let at = recTakeAt, let t = tape {
+                var e = Edits.load(t.url)
+                e.takes[Edits.key(url)] = at
+                e.save(t.url)
+            }
             if let place = placeFor.removeValue(forKey: url) { _ = store.renameClip(url, place: place) }
         }
+        let at = recTakeAt
+        recTakeAt = nil
+        mark = nil
         reloadCurrent()
-        seek(oldTotal)
+        seek(at.map { $0 + took } ?? oldTotal)
+    }
+
+    // MARK: editing
+
+    /// Change a clip's in and out points. `save` writes edits.json; while dragging, the
+    /// tape is rebuilt without touching the disk.
+    func setTrim(clip i: Int, trimIn: Double, trimOut: Double, save: Bool) {
+        guard timeline.clips.indices.contains(i), let t = tape else { return }
+        let c = timeline.clips[i]
+        let newIn = max(0, min(trimIn, c.seconds - 0.2))
+        let newOut = max(newIn + 0.2, min(trimOut, c.seconds))
+        var e = edits
+        let k = Edits.key(c.url)
+        // Trimming the front of a take keeps its audio where it was on the tape.
+        if let at = e.takes[k] { e.takes[k] = max(0, at + (newIn - c.trimIn)) }
+        e.trims[k] = .init(trimIn: newIn, trimOut: newOut >= c.seconds - 0.01 ? nil : newOut)
+        applyEdits(e)
+        if save { e.save(t.url) }
+    }
+
+    func resetTrim(clip i: Int) {
+        guard timeline.clips.indices.contains(i), let t = tape else { return }
+        let c = timeline.clips[i]
+        var e = edits
+        let k = Edits.key(c.url)
+        if let at = e.takes[k] { e.takes[k] = max(0, at - c.trimIn) }
+        e.trims[k] = nil
+        applyEdits(e)
+        e.save(t.url)
+    }
+
+    private func applyEdits(_ e: Edits) {
+        let clips = timeline.clips.map { c -> Timeline.Clip in
+            var base = c; base.trimIn = 0; base.trimOut = nil; base.overdubAt = nil
+            return e.apply(to: base)
+        }
+        let tl = Timeline(clips: clips)
+        let p = min(position, tl.total)
+        engine.pause()
+        head.timeline = tl
+        head.position = p
+        try? engine.start()
+        edits = e
+        timeline = tl
+        position = p
+        if let t = tape { totals[t.id] = tl.total }
+    }
+
+    /// Play one clip's whole original, covered parts included — or go back to the tape.
+    func setSolo(_ i: Int?) {
+        guard i != solo else { return }
+        let wasPlaying = playing
+        playing = false
+        head.rate = 0
+        engine.pause()
+        if let i, timeline.clips.indices.contains(i), mappedAll.indices.contains(i) {
+            var c = timeline.clips[i]; c.trimIn = 0; c.trimOut = nil; c.overdubAt = nil
+            head.clips = [mappedAll[i]]
+            head.timeline = Timeline(clips: [c])
+            head.position = 0
+        } else {
+            head.clips = mappedAll
+            head.timeline = timeline
+            head.position = min(position, timeline.total)
+        }
+        try? engine.start()
+        solo = i
+        position = head.position
+        if wasPlaying { playing = true }
+    }
+
+    /// The solo clip's playhead, in seconds into its file.
+    var soloPosition: Double { head.position }
+
+    private func computePeaks(_ files: [MappedWav]) {
+        let missing = files.filter { peaks[$0.url] == nil }
+        guard !missing.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async {
+            var out: [URL: [Float]] = [:]
+            for f in missing { out[f.url] = f.peaks(perSecond: Machine.peaksPerSecond) }
+            DispatchQueue.main.async { self.peaks.merge(out) { _, new in new } }
+        }
+    }
+
+    func peak(_ url: URL, at seconds: Double) -> Float {
+        guard let p = peaks[url], !p.isEmpty else { return 0 }
+        let i = Int(seconds * Machine.peaksPerSecond)
+        return i >= 0 && i < p.count ? p[i] : 0
     }
 
     // MARK: Live Activity
@@ -408,12 +519,17 @@ final class Machine: ObservableObject {
     private func swapIn(_ t: TapeInfo, at pos: Double?) {
         var clips: [Timeline.Clip] = []
         var mapped: [MappedWav] = []
+        let e = Edits.load(t.url)
         for c in store.clips(in: t) {
             guard let m = MappedWav(url: c.url) else { continue }
-            clips.append(.init(url: c.url, seconds: m.seconds, date: c.date, name: c.name))
+            clips.append(e.apply(to: .init(url: c.url, seconds: m.seconds, date: c.date, name: c.name)))
             mapped.append(m)
         }
         let tl = Timeline(clips: clips)
+        edits = e
+        solo = nil
+        mappedAll = mapped
+        computePeaks(mapped)
         head.rate = 0
         engine.pause()
         head.clips = mapped

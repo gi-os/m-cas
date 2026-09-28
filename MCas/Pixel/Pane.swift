@@ -3,9 +3,9 @@ import SwiftUI
 import AudioToolbox
 
 enum Screen: Int, CaseIterable {
-    case deck, shelf, clips, label, settings
-    var title: String { ["DECK", "SHELF", "CLIPS", "LABEL", "SETTINGS"][rawValue] }
-    static let tabs: [Screen] = [.deck, .shelf, .clips, .label]
+    case deck, shelf, clips, label, settings, edit
+    var title: String { ["DECK", "SHELF", "CLIPS", "LABEL", "SETTINGS", "EDIT"][rawValue] }
+    static let tabs: [Screen] = [.deck, .shelf, .clips, .edit, .label]
 }
 
 enum Tool: String { case draw, erase, none }
@@ -81,6 +81,7 @@ final class Pane: ObservableObject {
             case .shelf: drawShelf(c, t)
             case .clips: drawClips(c, t)
             case .label: drawLabel(c, t)
+            case .edit: drawEdit(c, t)
             case .settings: drawSettings(c, t)
             }
         }
@@ -113,9 +114,9 @@ final class Pane: ObservableObject {
         let y = f.tabTop
         Pix.fill(c, 0, y, f.w, f.h - y, Ink.hex(0x0c0c18))
         Pix.fill(c, 0, y, f.w, 1, Ink.blue2)
-        let slot = f.w / 4
-        for s in Screen.tabs {
-            let cx = (slot * CGFloat(s.rawValue) + slot / 2).rounded(), on = s == screen
+        let slot = f.w / CGFloat(Screen.tabs.count)
+        for (n, s) in Screen.tabs.enumerated() {
+            let cx = (slot * CGFloat(n) + slot / 2).rounded(), on = s == screen
             Pix.text(s.title, cx, y + 6, on ? Ink.yellow : Ink.grey, font: on ? Pix.bold : Pix.regular, align: .center)
             if on { Pix.fill(c, cx - 9, y + 16, 18, 1, Ink.yellow) }
         }
@@ -167,7 +168,7 @@ final class Pane: ObservableObject {
         var y = cas.maxY + 11
         if m.recording {
             Pix.text("RECORDING", f.left, y, Ink.red, font: Pix.bold)
-            Pix.text(mmss(m.recSeconds) + "  ONTO THE END", f.left, y + 11, Ink.grey)
+            Pix.marquee(c, mmss(m.recSeconds) + (m.mark != nil ? "  OVER THE TAPE" : "  ONTO THE END"), f.left, y + 11, maxW: f.width, Ink.grey, t: t)
         } else if let i = tl.clipIndex(at: m.position) {
             let clip = tl.clips[i]
             Pix.marquee(c, clip.name.uppercased(), f.left, y, maxW: f.width, Ink.cream, font: Pix.bold, t: t)
@@ -178,12 +179,16 @@ final class Pane: ObservableObject {
         }
         y += 26
         if !tl.isEmpty {
-            var x = f.left
-            for (i, clip) in tl.clips.enumerated() {
-                let w = max(2, (f.width * CGFloat(clip.seconds / tl.total)).rounded() - 1)
-                Pix.fill(c, x, y, min(w, f.right - x), 9, Ink.clipColors[i % 6])
-                x += w + 1
-                if x >= f.right { break }
+            for seg in tl.segments {
+                let x0 = f.left + (CGFloat(seg.start / tl.total) * f.width).rounded()
+                let x1 = f.left + (CGFloat(seg.end / tl.total) * f.width).rounded()
+                let take = tl.clips[seg.clip].isTake
+                Pix.fill(c, x0, y, max(1, x1 - x0 - 1), 9, take ? Ink.red : Ink.clipColors[seg.clip % 6])
+                if take { Pix.fill(c, x0, y, max(1, x1 - x0 - 1), 2, Ink.pink) }
+            }
+            if let mk = m.mark {
+                let mx = f.left + (CGFloat(tl.fraction(mk)) * (f.width - 1)).rounded()
+                Pix.fill(c, mx, y - 5, 1, 17, Ink.yellow); Pix.fill(c, mx, y - 5, 4, 3, Ink.yellow)
             }
             let hx = f.left + (CGFloat(tl.fraction(m.position)) * (f.width - 1)).rounded()
             Pix.fill(c, hx, y - 3, 1, 15, Ink.cream); Pix.fill(c, hx - 1, y - 4, 3, 2, Ink.cream)
@@ -233,7 +238,7 @@ final class Pane: ObservableObject {
         Pix.fill(c, f.left, y + 3, f.width, 2, Ink.blue)
         Pix.fill(c, f.left, y + 3, kx - f.left, 2, Ink.cream)
         if !tl.isEmpty {
-            for i in 1..<max(1, tl.clips.count) {
+            for i in 1..<max(1, tl.segments.count) {
                 let tx = f.left + (CGFloat(tl.fraction(tl.start(of: i))) * (f.width - 1)).rounded()
                 Pix.fill(c, tx, y + 1, 1, 2, Ink.grey)
             }
@@ -383,22 +388,24 @@ final class Pane: ObservableObject {
     private var headY: CGFloat { ((topV + botV) / 2).rounded() }
     private var playBar: CGRect { CGRect(x: f.left, y: botV + 5, width: f.width, height: 16) }
 
-    private struct Row { let index: Int; let y: CGFloat; let h: CGFloat; let seconds: Double }
+    /// One row per stretch of tape you can hear: covered parts aren't listed.
+    private struct Row { let index: Int; let clip: Int; let y: CGFloat; let h: CGFloat; let seconds: Double }
 
     private func rows() -> [Row] {
         var y: CGFloat = 0
-        return m.timeline.clips.enumerated().map { i, c in
-            let h = max(30, (CGFloat(c.seconds / 60) * 2.4).rounded())
+        return m.timeline.segments.enumerated().map { i, sg in
+            let h = max(30, (CGFloat(sg.length / 60) * 2.4).rounded())
             defer { y += h + 2 }
-            return Row(index: i, y: y, h: h, seconds: c.seconds)
+            return Row(index: i, clip: sg.clip, y: y, h: h, seconds: sg.length)
         }
     }
 
     private func posToY(_ pos: Double) -> CGFloat {
         let tl = m.timeline, rs = rows()
-        guard let loc = tl.locate(pos), rs.indices.contains(loc.index) else { return 0 }
-        let r = rs[loc.index]
-        return r.y + CGFloat(r.seconds > 0 ? loc.offset / r.seconds : 0) * r.h
+        guard let si = tl.segmentIndex(at: pos), rs.indices.contains(si) else { return 0 }
+        let r = rs[si]
+        let into = min(max(0, pos - tl.segments[si].start), r.seconds)
+        return r.y + CGFloat(r.seconds > 0 ? into / r.seconds : 0) * r.h
     }
 
     private func yToPos(_ y: CGFloat) -> Double {
@@ -424,9 +431,9 @@ final class Pane: ObservableObject {
         for r in rs {
             let y = (off + r.y).rounded()
             if y > botV || y + r.h < topV { continue }
-            let clip = m.timeline.clips[r.index]
+            let clip = m.timeline.clips[r.clip]
             let under = headY >= y && headY < y + r.h + 2
-            Pix.fill(c, f.left, y, 12, r.h, Ink.clipColors[r.index % 6])
+            Pix.fill(c, f.left, y, 12, r.h, clip.isTake ? Ink.red : Ink.clipColors[r.clip % 6])
             var yy = y + 3
             while yy < y + r.h - 2 { Pix.fill(c, f.left + 5, yy, 2, 2, Ink.dark); yy += 6 }
             Pix.rrect(c, cardX, y, cardW, r.h, 4, under ? Ink.cream : Ink.blue)
@@ -533,12 +540,313 @@ final class Pane: ObservableObject {
         tabs(c)
     }
 
+    // MARK: edit — the tape as tracks
+
+    /// Pixels per second of tape, and the steps + and − move through.
+    private static let zooms: [CGFloat] = [0.5, 1, 2, 4, 8, 16, 32, 64]
+    private var zoomIndex = 4
+    private var zoom: CGFloat { Pane.zooms[zoomIndex] }
+    private var layersMode = false
+    private var selectedClip: Int?
+    private var editDrag: EditDrag = .none
+    private enum EditDrag { case none, pan, trimIn, trimOut }
+
+    private var laneTop: CGFloat { f.top + 58 }
+    private var trackLaneH: CGFloat { max(48, min(90, ((f.tabTop - 48 - 70) - laneTop) * 0.55)).rounded() }
+    private var baseLaneH: CGFloat { layersMode ? 36 : trackLaneH }
+    private var takeLaneH: CGFloat { 20 }
+    private var takeLayers: [Timeline.Segment] { m.timeline.layers.filter { m.timeline.clips[$0.clip].isTake } }
+    private var lanesBottom: CGFloat {
+        layersMode ? laneTop + baseLaneH + CGFloat(min(takeLayers.count, maxTakeLanes)) * (takeLaneH + 3) : laneTop + trackLaneH
+    }
+    private var maxTakeLanes: Int { max(1, Int(((f.tabTop - 48 - 64) - (laneTop + baseLaneH)) / (takeLaneH + 3))) }
+    private var modePill: CGRect { CGRect(x: f.right - 46, y: f.top + 22, width: 46, height: 13) }
+    private var zoomOut: CGRect { CGRect(x: f.right - 32, y: lanesBottom + 8, width: 14, height: 13) }
+    private var zoomIn: CGRect { CGRect(x: f.right - 14, y: lanesBottom + 8, width: 14, height: 13) }
+    private var playheadX: CGFloat { (f.w / 2).rounded() }
+
+    /// The editor's playhead on the tape. While a clip's original plays alone, its file
+    /// position is shown where that clip sits.
+    private var editPosition: Double {
+        if let s = m.solo, let lay = m.timeline.layers.first(where: { $0.clip == s }) {
+            return lay.start + (m.soloPosition - m.timeline.clips[s].trimIn)
+        }
+        return m.position
+    }
+
+    private func xFor(_ t: Double) -> CGFloat { playheadX + CGFloat(t - editPosition) * zoom }
+    private func tFor(_ x: CGFloat) -> Double { editPosition + Double((x - playheadX) / zoom) }
+
+    private func waveColumn(_ c: CGContext, x: CGFloat, mid: CGFloat, half: CGFloat, peak: Float, color: UIColor) {
+        let v = CGFloat(min(1, sqrt(Double(peak)) * 1.15))
+        let h = max(1, (v * half).rounded())
+        Pix.fill(c, x, mid - h, 1, h * 2, color)
+    }
+
+    private func drawEdit(_ c: CGContext, _ t: Double) {
+        let bg = Ink.hex(0x141428)
+        Sky.draw(c, t, bg, Ink.navy, bg, in: f.full)
+        chrome(c, t)
+        guard let tape = m.tape else { return }
+        let tl = m.timeline
+        Pix.text("EDIT", f.left, f.top + 18, Ink.cream, font: Pix.big)
+        pill(c, modePill, layersMode ? "LAYERS" : "TRACK", layersMode ? Ink.purple : Ink.blue2, Ink.cream)
+        Pix.marquee(c, tape.name.uppercased(), f.left + 44, f.top + 24, maxW: modePill.minX - f.left - 48, Ink.grey, t: t)
+        Pix.text(clock10(editPosition), playheadX, f.top + 40, m.solo != nil ? Ink.purple : Ink.yellow, align: .center)
+
+        // Ruler: a tick every N seconds, N chosen so ticks sit ~24 px apart.
+        let rulerY = laneTop - 7
+        let steps: [Double] = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800]
+        let step = steps.first { CGFloat($0) * zoom >= 24 } ?? 3600
+        var tick = (tFor(0) / step).rounded(.down) * step
+        while xFor(tick) < f.w {
+            let x = xFor(tick).rounded()
+            if tick >= 0 && tick <= tl.total { Pix.fill(c, x, rulerY, 1, 4, Ink.blue2) }
+            tick += step
+        }
+
+        c.saveGState(); c.clip(to: CGRect(x: 0, y: laneTop, width: f.w, height: lanesBottom - laneTop))
+        if layersMode { drawLayers(c, t) } else { drawTrack(c, t) }
+        c.restoreGState()
+
+        // Mark, and the take being recorded now.
+        if let mk = m.mark {
+            let mx = xFor(mk).rounded()
+            if m.recording {
+                let x1 = xFor(mk + m.recSeconds).rounded()
+                Pix.fill(c, mx, laneTop, max(1, x1 - mx), lanesBottom - laneTop, Ink.red.withAlphaComponent(0.55))
+            }
+            Pix.fill(c, mx, laneTop - 8, 1, lanesBottom - laneTop + 8, Ink.yellow)
+            Pix.fill(c, mx + 1, laneTop - 8, 5, 4, Ink.yellow)
+        }
+        // Playhead, fixed in the middle; the tape moves under it.
+        Pix.fill(c, playheadX, laneTop - 3, 1, lanesBottom - laneTop + 6, Ink.cream)
+        Pix.poly(c, [CGPoint(x: playheadX - 3, y: laneTop - 6), CGPoint(x: playheadX + 4, y: laneTop - 6), CGPoint(x: playheadX, y: laneTop - 2)], Ink.cream)
+
+        // Zoom, and what's selected.
+        pill(c, zoomOut, "-", Ink.blue, Ink.cream)
+        pill(c, zoomIn, "+", Ink.blue, Ink.cream)
+        var y = lanesBottom + 10
+        if let i = selectedClip, tl.clips.indices.contains(i) {
+            let clip = tl.clips[i]
+            Pix.marquee(c, clip.name.uppercased(), f.left, y, maxW: zoomOut.minX - f.left - 4, clip.isTake ? Ink.pink : Ink.cream, font: Pix.bold, t: t)
+            y += 11
+            Pix.text("IN " + clock10(clip.trimIn), f.left, y, Ink.mint)
+            Pix.text("OUT " + clock10(clip.outPoint), f.right, y, Ink.mint, align: .right)
+            y += 10
+            let what = clip.isTake ? "TAKE AT " + clock10(clip.overdubAt ?? 0) : "FILE " + clock10(clip.seconds)
+            Pix.marquee(c, what + "  ·  DRAG THE EDGES TO TRIM", f.left, y, maxW: f.width, Ink.grey, t: t)
+        } else {
+            Pix.marquee(c, "TAP A CLIP TO SELECT IT", f.left, y, maxW: zoomOut.minX - f.left - 4, Ink.grey, t: t)
+            y += 11
+            Pix.marquee(c, m.mark == nil ? "MARK SETS WHERE ● RECORDS OVER" : "● RECORDS OVER FROM THE MARK", f.left, y, maxW: f.width, Ink.grey, t: t)
+        }
+        drawEditKeys(c)
+        tabs(c)
+    }
+
+    /// Track mode: only what you'd hear. Takes are red; the selected clip is cream.
+    private func drawTrack(_ c: CGContext, _ t: Double) {
+        let tl = m.timeline
+        let mid = (laneTop + trackLaneH / 2).rounded(), half = trackLaneH / 2 - 3
+        Pix.fill(c, 0, laneTop, f.w, trackLaneH, Ink.ink)
+        for xi in 0..<Int(f.w) {
+            let x = CGFloat(xi)
+            let tt = tFor(x)
+            guard tt >= 0, tt <= tl.total, let si = tl.segmentIndex(at: tt) else { continue }
+            let sg = tl.segments[si], clip = tl.clips[sg.clip]
+            let src = sg.src + (tt - sg.start)
+            let color: UIColor = sg.clip == selectedClip ? Ink.cream : (clip.isTake ? Ink.red : Ink.clipColors[sg.clip % 6])
+            waveColumn(c, x: x, mid: mid, half: half, peak: m.peak(clip.url, at: src), color: color)
+        }
+        for sg in tl.segments {
+            let x = xFor(sg.start).rounded()
+            if x >= 0 && x < f.w { Pix.fill(c, x, laneTop, 1, trackLaneH, Ink.navy) }
+        }
+        drawHandles(c, top: laneTop, height: trackLaneH)
+    }
+
+    /// Layers mode: every clip whole. The base tape on top with covered parts dimmed, each
+    /// take on its own lane underneath where it was recorded.
+    private func drawLayers(_ c: CGContext, _ t: Double) {
+        let tl = m.timeline
+        let base = tl.layers.filter { !tl.clips[$0.clip].isTake }
+        let mid = (laneTop + baseLaneH / 2).rounded(), half = baseLaneH / 2 - 3
+        Pix.fill(c, 0, laneTop, f.w, baseLaneH, Ink.ink)
+        for xi in 0..<Int(f.w) {
+            let x = CGFloat(xi), tt = tFor(x)
+            guard let lay = base.first(where: { tt >= $0.start && tt < $0.end }) else { continue }
+            let clip = tl.clips[lay.clip]
+            let hidden = tl.covered(tt)
+            if hidden && xi % 2 == 1 { continue }
+            let color: UIColor = lay.clip == selectedClip ? Ink.cream : (hidden ? Ink.blue2 : Ink.clipColors[lay.clip % 6])
+            waveColumn(c, x: x, mid: mid, half: half, peak: m.peak(clip.url, at: lay.src + (tt - lay.start)), color: color)
+        }
+        for (k, lay) in takeLayers.prefix(maxTakeLanes).enumerated() {
+            let y = laneTop + baseLaneH + 3 + CGFloat(k) * (takeLaneH + 3)
+            let x0 = max(0, xFor(lay.start).rounded()), x1 = min(f.w, xFor(lay.end).rounded())
+            guard x1 > x0 else { continue }
+            Pix.fill(c, x0, y, x1 - x0, takeLaneH, Ink.hex(0x281018))
+            let clip = tl.clips[lay.clip]
+            for xi in Int(x0)..<Int(x1) {
+                let tt = tFor(CGFloat(xi))
+                let color: UIColor = lay.clip == selectedClip ? Ink.cream : Ink.red
+                waveColumn(c, x: CGFloat(xi), mid: y + takeLaneH / 2, half: takeLaneH / 2 - 2, peak: m.peak(clip.url, at: lay.src + (tt - lay.start)), color: color)
+            }
+        }
+        if let s = m.solo, let lay = tl.layers.first(where: { $0.clip == s }) {
+            // The whole original is playing: show its full file extent.
+            let clip = tl.clips[s]
+            let x0 = xFor(lay.start - clip.trimIn).rounded(), x1 = xFor(lay.start - clip.trimIn + clip.seconds).rounded()
+            Pix.fill(c, x0, laneTop, max(1, x1 - x0), 1, Ink.purple)
+        }
+        if let i = selectedClip, let lay = tl.layers.first(where: { $0.clip == i }) {
+            let isTake = tl.clips[i].isTake
+            let k = takeLayers.firstIndex(of: lay) ?? 0
+            let top = isTake ? laneTop + baseLaneH + 3 + CGFloat(k) * (takeLaneH + 3) : laneTop
+            drawHandles(c, top: top, height: isTake ? takeLaneH : baseLaneH)
+        }
+    }
+
+    private func handleXs() -> (CGFloat, CGFloat)? {
+        guard let i = selectedClip, let lay = m.timeline.layers.first(where: { $0.clip == i }) else { return nil }
+        return (xFor(lay.start).rounded(), xFor(lay.end).rounded())
+    }
+
+    private func drawHandles(_ c: CGContext, top: CGFloat, height: CGFloat) {
+        guard let (a, b) = handleXs() else { return }
+        for (x, left) in [(a, true), (b, false)] where x > -4 && x < f.w + 4 {
+            Pix.fill(c, x - 1, top, 2, height, Ink.yellow)
+            Pix.fill(c, left ? x - 1 : x - 4, top + height / 2 - 5, 5, 10, Ink.yellow)
+            Pix.fill(c, left ? x + 1 : x - 2, top + height / 2 - 3, 1, 6, Ink.dark)
+        }
+    }
+
+    private func clock10(_ s: Double) -> String {
+        let v = max(0, s)
+        let m = Int(v) / 60, sec = Int(v) % 60, tenth = Int((v - v.rounded(.down)) * 10)
+        return String(format: "%02d:%02d.%d", m, sec, tenth)
+    }
+
+    // Keys: ⚑ MARK, ▶, ● over, ↺ reset trim.
+    private func drawEditKeys(_ c: CGContext) {
+        let tp = transport
+        Pix.rrect(c, tp.minX, tp.minY, tp.width, tp.height, 6, Ink.ink)
+        Pix.fill(c, tp.minX + 4, tp.minY + 2, tp.width - 8, 1, Ink.blue)
+        let down: [Bool] = [m.mark != nil || heldKey == 0, m.playing || heldKey == 1, m.recording || heldKey == 2, heldKey == 3]
+        for i in 0..<4 {
+            let r = key(i)
+            let sunk: CGFloat = down[i] ? 3 : 0
+            let face = CGRect(x: r.minX, y: r.minY + sunk, width: r.width, height: r.height - 5)
+            Pix.rrect(c, r.minX, face.maxY - 2, r.width, (down[i] ? 2 : 5) + 2, 3, Ink.dark)
+            let rec = i == 2 && m.recording
+            Pix.rrect(c, face.minX, face.minY, face.width, face.height, 3, rec ? Ink.red : (i == 0 && m.mark != nil ? Ink.yellow : (down[i] ? Ink.tan : Ink.cream)))
+            if !down[i] { Pix.fill(c, face.minX + 3, face.minY + 1, face.width - 6, 1, UIColor.white.withAlphaComponent(0.6)) }
+            let cx = face.midX.rounded(), cy = face.midY.rounded()
+            let ink: UIColor = rec ? Ink.cream : Ink.dark
+            switch i {
+            case 0:
+                Pix.fill(c, cx - 3, cy - 6, 1, 12, ink)
+                Pix.poly(c, [CGPoint(x: cx - 2, y: cy - 6), CGPoint(x: cx + 5, y: cy - 3), CGPoint(x: cx - 2, y: cy)], ink)
+            case 1:
+                if m.playing { Pix.fill(c, cx - 4, cy - 5, 3, 10, ink); Pix.fill(c, cx + 2, cy - 5, 3, 10, ink) }
+                else { Pix.tri(c, cx - 3, cy, 1.3, m.solo != nil || layersMode ? Ink.purple : ink) }
+            case 2:
+                Pix.circle(c, cx, cy, 5, rec ? Ink.cream : Ink.red)
+            default:
+                Pix.fill(c, cx - 5, cy - 1, 9, 2, ink); Pix.poly(c, [CGPoint(x: cx - 6, y: cy), CGPoint(x: cx - 2, y: cy - 4), CGPoint(x: cx - 2, y: cy + 4)], ink)
+            }
+        }
+    }
+
+    private func editDown(_ p: CGPoint) {
+        if modePill.insetBy(dx: -3, dy: -4).contains(p) {
+            layersMode.toggle()
+            if !layersMode { m.setSolo(nil) }
+            return
+        }
+        if zoomOut.insetBy(dx: -2, dy: -4).contains(p) { zoomIndex = max(0, zoomIndex - 1); return }
+        if zoomIn.insetBy(dx: -2, dy: -4).contains(p) { zoomIndex = min(Pane.zooms.count - 1, zoomIndex + 1); return }
+        if let i = (0..<4).first(where: { key($0).insetBy(dx: -1, dy: -4).contains(p) }) {
+            heldKey = i
+            gesture = .hold
+            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+            if m.keyClicks { AudioServicesPlaySystemSound(1104) }
+            switch i {
+            case 0:
+                if let mk = m.mark, abs(mk - m.position) < 0.3 { m.mark = nil } else { m.setSolo(nil); m.mark = m.position }
+            case 1:
+                if layersMode, let s = selectedClip { if m.solo != s { m.setSolo(s) }; m.togglePlay() }
+                else { m.setSolo(nil); m.togglePlay() }
+            case 2:
+                if !m.recording && m.mark == nil { m.setSolo(nil); m.mark = m.position }
+                m.toggleRecording()
+            default:
+                if let s = selectedClip { m.resetTrim(clip: s) }
+            }
+            return
+        }
+        guard p.y >= laneTop - 8, p.y <= lanesBottom + 4 else { return }
+        gesture = .scrub
+        editDrag = .pan
+        if let (a, b) = handleXs() {
+            if abs(p.x - a) <= 6 { editDrag = .trimIn } else if abs(p.x - b) <= 6 { editDrag = .trimOut }
+        }
+        if editDrag != .pan { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+    }
+
+    private func editMove(_ p: CGPoint) {
+        let dx = p.x - lastPoint.x
+        switch editDrag {
+        case .pan:
+            if m.solo != nil { m.setSolo(nil) }
+            m.seek(m.position - Double(dx / zoom))
+        case .trimIn, .trimOut:
+            guard let i = selectedClip, m.timeline.clips.indices.contains(i) else { return }
+            let c = m.timeline.clips[i]
+            let d = Double(dx / zoom)
+            if editDrag == .trimIn { m.setTrim(clip: i, trimIn: c.trimIn + d, trimOut: c.outPoint, save: false) }
+            else { m.setTrim(clip: i, trimIn: c.trimIn, trimOut: c.outPoint + d, save: false) }
+        case .none: break
+        }
+    }
+
+    private func editUp(_ p: CGPoint) {
+        defer { editDrag = .none }
+        switch editDrag {
+        case .trimIn, .trimOut:
+            if let i = selectedClip, m.timeline.clips.indices.contains(i) {
+                let c = m.timeline.clips[i]
+                m.setTrim(clip: i, trimIn: c.trimIn, trimOut: c.outPoint, save: true)
+            }
+        case .pan where !moved:
+            // A tap selects whatever is under the finger.
+            let tt = tFor(p.x)
+            let tl = m.timeline
+            if layersMode {
+                if p.y < laneTop + baseLaneH {
+                    selectedClip = tl.layers.first { !tl.clips[$0.clip].isTake && tt >= $0.start && tt < $0.end }?.clip
+                } else {
+                    let k = Int((p.y - laneTop - baseLaneH - 3) / (takeLaneH + 3))
+                    let lanes = Array(takeLayers.prefix(maxTakeLanes))
+                    selectedClip = lanes.indices.contains(k) && tt >= lanes[k].start && tt < lanes[k].end ? lanes[k].clip : nil
+                }
+                if let s = m.solo, s != selectedClip { m.setSolo(nil) }
+            } else {
+                selectedClip = tl.segmentIndex(at: tt).map { tl.segments[$0].clip }
+            }
+            UISelectionFeedbackGenerator().selectionChanged()
+        default: break
+        }
+    }
+
     // MARK: input
 
     func down(_ p: CGPoint) {
         downPoint = p; lastPoint = p; moved = false; gesture = .none; windCarry = 0; lastDy = 0
         if p.y >= f.tabTop {
-            if let s = Screen(rawValue: min(3, max(0, Int(p.x / (f.w / 4))))) { switchTo(s) }
+            let n = Screen.tabs.count
+            switchTo(Screen.tabs[min(n - 1, max(0, Int(p.x / (f.w / CGFloat(n)))))])
             return
         }
         switch screen {
@@ -548,6 +856,7 @@ final class Pane: ObservableObject {
             gesture = .scroll; fling = 0
             startRenameTimer(at: p)
         case .label: labelDown(p)
+        case .edit: editDown(p)
         case .settings: settingsDown(p)
         }
     }
@@ -573,7 +882,7 @@ final class Pane: ObservableObject {
         case .paint:
             paint(from: lastPoint, to: p)
         case .scrub:
-            scrub(to: p.x)
+            if screen == .edit { editMove(p) } else { scrub(to: p.x) }
         default: break
         }
         lastPoint = p
@@ -586,7 +895,7 @@ final class Pane: ObservableObject {
             stopPressTimer()
             if press.up(at: CACurrentMediaTime()) == .tap { m.togglePlay() }
         case .hold:
-            keyUp()
+            if screen == .edit { heldKey = nil } else { keyUp() }
         case .scroll:
             renameTimer?.invalidate(); renameTimer = nil
             if renamedOnHold { renamedOnHold = false; return }
@@ -602,7 +911,7 @@ final class Pane: ObservableObject {
             if let img = inkWorking { m.setInk(img, save: true) }
             inkWorking = nil
         case .scrub:
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.5)
+            if screen == .edit { editUp(p) } else { UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.5) }
         case .none: break
         }
     }
@@ -620,12 +929,13 @@ final class Pane: ObservableObject {
             guard let r = self.rows().first(where: { p.y - off >= $0.y && p.y - off < $0.y + $0.h + 2 }) else { return }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             self.renamedOnHold = true
-            self.m.beginClipRename(r.index)
+            self.m.beginClipRename(r.clip)
             self.onEditName?()
         }
     }
 
     private func switchTo(_ s: Screen) {
+        if screen == .edit && s != .edit { m.setSolo(nil) }
         if screen == .label && s != .label && m.editing == .tape { m.renameCurrent(m.nameDraft) }
         screen = s
     }
