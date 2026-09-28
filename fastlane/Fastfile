@@ -115,6 +115,9 @@ platform :ios do
       number_of_retries: 1,
       stop_after_first_error: false
     )
+    count = Dir[File.expand_path("screenshots/**/*.png", __dir__)].count
+    UI.user_error!("No screenshots were captured; not uploading an empty set.") if count.zero?
+    UI.success("#{count} screenshots captured")
   end
 
   # Metadata, screenshots and (optionally) submission for the newest TestFlight build.
