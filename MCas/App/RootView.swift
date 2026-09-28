@@ -56,6 +56,7 @@ struct RootView: View {
             side.onEditName = { editingName = true }
         }
         .onChange(of: editingName) { _, on in if !on { machine.commitName() } }
+        .onOpenURL { machine.open($0) }
         .onChange(of: phase) { _, p in if p != .active { machine.savePosition() } }
     }
 }

@@ -257,7 +257,7 @@ final class Machine: ObservableObject {
         recSeconds = 0
         recPlace = "Finding where you are"
         recCoordinate = nil
-        startActivity(tape: tape.name, started: date)
+        startActivity(tape: tape, started: date)
         places.lookup { [weak self] fix in
             guard let self, let fix else { return }
             if let c = fix.coordinate { self.store.setCoordinate(c, for: url) }
@@ -302,10 +302,18 @@ final class Machine: ObservableObject {
 
     // MARK: Live Activity
 
-    private func startActivity(tape: String, started: Date) {
+    private func startActivity(tape: TapeInfo, started: Date) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        let (a, b) = Ink.pairs[max(0, min(5, tape.label.pair))]
+        let attrs = RecordingAttributes(tape: tape.name, clip: timeline.clips.count + 1, labelA: Self.hex(a), labelB: Self.hex(b))
         let state = RecordingAttributes.ContentState(place: recPlace, started: started)
-        activity = try? Activity.request(attributes: RecordingAttributes(tape: tape), content: .init(state: state, staleDate: nil))
+        activity = try? Activity.request(attributes: attrs, content: .init(state: state, staleDate: nil))
+    }
+
+    private static func hex(_ c: UIColor) -> String {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        c.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "%02x%02x%02x", Int(r * 255), Int(g * 255), Int(b * 255))
     }
 
     private func updateActivity() {
@@ -314,11 +322,22 @@ final class Machine: ObservableObject {
         Task { await a.update(.init(state: state, staleDate: nil)) }
     }
 
+    /// Stays up as a "saved" card for a few seconds, then goes.
     private func endActivity() {
         guard let a = activity else { return }
         activity = nil
-        let state = RecordingAttributes.ContentState(place: recPlace, started: recStarted)
-        Task { await a.end(.init(state: state, staleDate: nil), dismissalPolicy: .immediate) }
+        let state = RecordingAttributes.ContentState(place: recPlace, started: recStarted, saved: true, seconds: Date().timeIntervalSince(recStarted))
+        Task { await a.end(.init(state: state, staleDate: nil), dismissalPolicy: .after(Date().addingTimeInterval(6))) }
+    }
+
+    /// `mcas://play?clip=7` from the saved card: cue that clip and play it.
+    func open(_ url: URL) {
+        guard url.scheme == "mcas" else { return }
+        if url.host == "play" {
+            let n = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "clip" })?.value.flatMap(Int.init)
+            if let n, timeline.clips.indices.contains(n - 1) { seek(timeline.start(of: n - 1)) }
+            play()
+        }
     }
 
     // MARK: renaming
