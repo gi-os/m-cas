@@ -14,11 +14,16 @@ enum Palette {
     static let lut: [UInt8] = {
         var t = [UInt8](repeating: 0, count: 32768)
         for r in 0..<32 { for g in 0..<32 { for b in 0..<32 {
-            let R = r * 8 + 4, G = g * 8 + 4, B = b * 8 + 4
-            var best = 0, bd = Int.max
-            for (i, p) in rgb.enumerated() {
-                let dr = R - Int(p.0), dg = G - Int(p.1), db = B - Int(p.2)
-                let d = dr * dr * 3 + dg * dg * 4 + db * db * 2
+            let R: Int = r * 8 + 4
+            let G: Int = g * 8 + 4
+            let B: Int = b * 8 + 4
+            var best = 0
+            var bd = Int.max
+            for i in 0..<rgb.count {
+                let dr: Int = R - Int(rgb[i].0)
+                let dg: Int = G - Int(rgb[i].1)
+                let db: Int = B - Int(rgb[i].2)
+                let d: Int = 3 * dr * dr + 4 * dg * dg + 2 * db * db
                 if d < bd { bd = d; best = i }
             }
             t[(r << 10) | (g << 5) | b] = UInt8(best)
@@ -26,7 +31,10 @@ enum Palette {
         return t
     }()
 
-    static let bayer: [Int] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map { Int(((Double($0) + 0.5) / 16 - 0.5) * 44) }
+    static let bayer: [Int] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map { (v: Int) -> Int in
+        let f: Double = (Double(v) + 0.5) / 16.0 - 0.5
+        return Int(f * 44.0)
+    }
 
     static func quantize(_ p: UnsafeMutablePointer<UInt8>, width: Int, height: Int) {
         lut.withUnsafeBufferPointer { lut in
@@ -34,11 +42,12 @@ enum Palette {
                 let row = (y & 3) << 2
                 for x in 0..<width {
                     let i = (y * width + x) * 4
-                    let t = bayer[row | (x & 3)]
-                    let r = min(255, max(0, Int(p[i]) + t)) >> 3
-                    let g = min(255, max(0, Int(p[i + 1]) + t)) >> 3
-                    let b = min(255, max(0, Int(p[i + 2]) + t)) >> 3
-                    let c = rgb[Int(lut[(r << 10) | (g << 5) | b])]
+                    let t: Int = bayer[row | (x & 3)]
+                    let r: Int = min(255, max(0, Int(p[i]) + t)) >> 3
+                    let g: Int = min(255, max(0, Int(p[i + 1]) + t)) >> 3
+                    let b: Int = min(255, max(0, Int(p[i + 2]) + t)) >> 3
+                    let key: Int = (r << 10) | (g << 5) | b
+                    let c = rgb[Int(lut[key])]
                     p[i] = c.0; p[i + 1] = c.1; p[i + 2] = c.2; p[i + 3] = 255
                 }
             }

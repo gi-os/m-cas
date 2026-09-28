@@ -138,8 +138,15 @@ final class Pane: ObservableObject {
         Pix.text(Pix.clock(tl.total), 128, 181, Ink.grey, align: .right)
         for i in 0..<26 {
             var h: CGFloat = 1
-            if m.recording { h = 1 + (CGFloat(min(1, m.level * 6)) * 11 * CGFloat(0.6 + 0.4 * abs(sin(t * 7 + Double(i))))).rounded() }
-            else if r != 0 { h = 2 + (abs(sin(t / 0.14 + Double(i) * 1.7)) * 10 * (abs(r) > 1.2 ? 1 : 0.75)).rounded() }
+            let wobble: Double = abs(sin(t / 0.14 + Double(i) * 1.7))
+            if m.recording {
+                let lv: Double = Double(min(1, m.level * 6))
+                let jitter: Double = 0.6 + 0.4 * abs(sin(t * 7 + Double(i)))
+                h = CGFloat(1 + (lv * 11 * jitter).rounded())
+            } else if r != 0 {
+                let gain: Double = abs(r) > 1.2 ? 1 : 0.75
+                h = CGFloat(2 + (wobble * 10 * gain).rounded())
+            }
             Pix.fill(c, CGFloat(16 + i * 4), 211 - h, 3, h, i > 21 ? Ink.red : i > 17 ? Ink.yellow : Ink.teal)
         }
         Pix.rrect(c, 8, 222, 120, 36, 18, Ink.blue)
@@ -240,7 +247,8 @@ final class Pane: ObservableObject {
             Pix.text(Pix.short(clip.seconds), 124, y + 14, mc, align: .right)
             if r.h >= 46 {
                 for j in 0..<24 {
-                    let bh = 1 + CGFloat(Int(abs(sin(Double(j * 13 + r.index * 7))) * 5))
+                    let seedV: Double = Double(j * 13 + r.index * 7)
+                    let bh: CGFloat = 1 + CGFloat(Int(abs(sin(seedV)) * 5))
                     Pix.fill(c, CGFloat(28 + j * 4), y + r.h - 3 - bh, 3, bh, under ? Ink.brown : Ink.blue2)
                 }
             }

@@ -72,7 +72,9 @@ enum Cassette {
         c.addPath(UIBezierPath(roundedRect: CGRect(x: x, y: y, width: w, height: h), cornerRadius: 5).cgPath); c.clip()
         Pix.vgrad(c, CGRect(x: x, y: y, width: w, height: h), [(0, Ink.cream), (1, Ink.hex(0xa88860))])
         c.restoreGState()
-        for (sx, sy) in [(x + 3, y + 3), (x + w - 5, y + 3), (x + 3, y + h - 5), (x + w - 5, y + h - 5)] { Pix.fill(c, sx, sy, 2, 2, Ink.grey) }
+        let left: CGFloat = x + 3, right: CGFloat = x + w - 5, top: CGFloat = y + 3, bottom: CGFloat = y + h - 5
+        let screws: [CGPoint] = [CGPoint(x: left, y: top), CGPoint(x: right, y: top), CGPoint(x: left, y: bottom), CGPoint(x: right, y: bottom)]
+        for s in screws { Pix.fill(c, s.x, s.y, 2, 2, Ink.grey) }
 
         let lr = labelRect(x, y, w, h)
         Pix.fill(c, lr.minX - 1, lr.minY - 1, lr.width + 2, lr.height + 2, Ink.dark)
@@ -93,10 +95,16 @@ enum Cassette {
             Pix.text(duration, lr.maxX - 4, lr.minY + 16, Ink.dark, align: .right)
         }
 
-        let wx = x + (w * 0.2).rounded(), wy = y + (h * 0.43).rounded(), ww = (w * 0.6).rounded(), wh = (h * 0.33).rounded()
+        let wx: CGFloat = x + (w * 0.2).rounded()
+        let wy: CGFloat = y + (h * 0.43).rounded()
+        let ww: CGFloat = (w * 0.6).rounded()
+        let wh: CGFloat = (h * 0.33).rounded()
         Pix.rrect(c, wx - 1, wy - 1, ww + 2, wh + 2, wh / 2, Ink.dark)
         Pix.rrect(c, wx, wy, ww, wh, wh / 2, Ink.windowDark)
-        let cy = wy + wh / 2, c1 = wx + wh / 2 + 1, c2 = wx + ww - wh / 2 - 1, rm = wh / 2 - 1
+        let cy: CGFloat = wy + wh / 2
+        let c1: CGFloat = wx + wh / 2 + 1
+        let c2: CGFloat = wx + ww - wh / 2 - 1
+        let rm: CGFloat = wh / 2 - 1
         let f = CGFloat(min(max(p, 0), 1))
         Pix.circle(c, c1, cy, 4 + (1 - f) * (rm - 4), Ink.brown)
         Pix.circle(c, c2, cy, 4 + f * (rm - 4), Ink.brown)
@@ -108,6 +116,8 @@ enum Cassette {
                 c.move(to: CGPoint(x: cx, y: cy)); c.addLine(to: CGPoint(x: cx + cos(a) * 4, y: cy + sin(a) * 4)); c.strokePath()
             }
         }
-        Pix.poly(c, [CGPoint(x: x + 16, y: y + h), CGPoint(x: x + 23, y: y + h - 9), CGPoint(x: x + w - 23, y: y + h - 9), CGPoint(x: x + w - 16, y: y + h)], Ink.dark.withAlphaComponent(0.45))
+        let by: CGFloat = y + h, bt: CGFloat = y + h - 9
+        let foot: [CGPoint] = [CGPoint(x: x + 16, y: by), CGPoint(x: x + 23, y: bt), CGPoint(x: x + w - 23, y: bt), CGPoint(x: x + w - 16, y: by)]
+        Pix.poly(c, foot, Ink.dark.withAlphaComponent(0.45))
     }
 }
