@@ -1,36 +1,48 @@
 import SwiftUI
+import UIKit
 
-/// A pixel screen, scaled up with no smoothing, redrawn 15 times a second.
+/// A pixel screen that fills its space edge to edge. Each canvas pixel is a whole number of
+/// device pixels, so nothing smears, and the canvas grows to cover the screen instead of
+/// leaving borders.
 struct PaneView: View {
     @ObservedObject var pane: Pane
-    @ObservedObject var machine = Machine.shared
+    var safeTop: CGFloat = 0
+    var safeBottom: CGFloat = 0
+    @Environment(\.displayScale) private var scale
     @State private var touching = false
 
     var body: some View {
         GeometryReader { geo in
-            let scale = min(geo.size.width / CGFloat(PixelCanvas.W), geo.size.height / CGFloat(PixelCanvas.H))
-            let w = CGFloat(PixelCanvas.W) * scale, h = CGFloat(PixelCanvas.H) * scale
+            let pxW = geo.size.width * scale
+            let pxH = geo.size.height * scale
+            let st = safeTop * scale, sb = safeBottom * scale
+            let k = max(1, min(floor(pxW / CGFloat(PixelCanvas.W)), floor(max(1, pxH - st - sb) / CGFloat(PixelCanvas.H))))
+            let cw = Int(ceil(pxW / k)), ch = Int(ceil(pxH / k))
+            let wPt = CGFloat(cw) * k / scale, hPt = CGFloat(ch) * k / scale
+            let toCanvas = { (p: CGPoint) in pane.layoutPoint(CGPoint(x: p.x * scale / k, y: p.y * scale / k)) }
             TimelineView(.animation(minimumInterval: 1.0 / 15)) { tl in
-                if let img = pane.render(at: tl.date.timeIntervalSinceReferenceDate) {
+                if let img = pane.render(at: tl.date.timeIntervalSinceReferenceDate, width: cw, height: ch,
+                                         safeTop: Int(ceil(st / k)), safeBottom: Int(ceil(sb / k))) {
                     Image(decorative: img, scale: 1)
                         .resizable()
                         .interpolation(.none)
-                        .frame(width: w, height: h)
+                        .frame(width: wPt, height: hPt)
                 }
             }
-            .frame(width: w, height: h)
+            .frame(width: wPt, height: hPt)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { v in
-                        let p = CGPoint(x: v.location.x / scale, y: v.location.y / scale)
+                        let p = toCanvas(v.location)
                         if !touching { touching = true; pane.down(p) } else { pane.move(p) }
                     }
-                      .onEnded { v in touching = false; pane.up(CGPoint(x: v.location.x / scale, y: v.location.y / scale)) }
+                    .onEnded { v in touching = false; pane.up(toCanvas(v.location)) }
             )
-            .position(x: geo.size.width / 2, y: geo.size.height / 2)
+            .offset(x: (geo.size.width - wPt) / 2, y: (geo.size.height - hPt) / 2)
             .accessibilityElement()
             .accessibilityLabel(Text("m-cas \(pane.screen.title.lowercased())"))
         }
+        .clipped()
     }
 }

@@ -66,7 +66,7 @@ enum Cassette {
     }
 
     static func draw(_ c: CGContext, _ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat,
-                     name: String, label: LabelSpec, ink: UIImage?, fraction p: Double, rot: Double, duration: String? = nil) {
+                     name: String, label: LabelSpec, ink: UIImage?, fraction p: Double, rot: Double, duration: String? = nil, t: Double = 0) {
         Pix.rrect(c, x - 1, y - 1, w + 2, h + 2, 6, Ink.dark)
         c.saveGState()
         c.addPath(UIBezierPath(roundedRect: CGRect(x: x, y: y, width: w, height: h), cornerRadius: 5).cgPath); c.clip()
@@ -87,7 +87,7 @@ enum Cassette {
             c.restoreGState()
         }
         Pix.fill(c, lr.minX, lr.minY, lr.width, 12, Ink.cream)
-        Pix.text(name.uppercased(), lr.minX + 3, lr.minY + 2, Ink.dark)
+        Pix.marquee(c, name.uppercased(), lr.minX + 3, lr.minY + 2, maxW: lr.width - 14, Ink.dark, t: t)
         Pix.text("A", lr.maxX - 3, lr.minY + 2, Ink.red, font: Pix.bold, align: .right)
         if let duration {
             let tw = ceil(Pix.width(duration)) + 5

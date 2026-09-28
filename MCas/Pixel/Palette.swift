@@ -69,18 +69,21 @@ enum Ink {
     static let clipColors: [UIColor] = [orange, yellow, mint, blue2, pink, tan]
 }
 
-/// A 136×296 canvas with UIKit's top-left origin, quantized on every frame.
+/// A canvas at whatever size fills the screen in whole device pixels. The 136×296 layout is
+/// drawn centered in it; everything around it is background, so there are no borders.
 final class PixelCanvas {
     static let W = 136, H = 296
+    let width: Int, height: Int
     let ctx: CGContext
     private let data: UnsafeMutablePointer<UInt8>
 
-    init() {
-        data = .allocate(capacity: Self.W * Self.H * 4)
-        data.initialize(repeating: 0, count: Self.W * Self.H * 4)
-        ctx = CGContext(data: data, width: Self.W, height: Self.H, bitsPerComponent: 8, bytesPerRow: Self.W * 4,
+    init(width: Int = PixelCanvas.W, height: Int = PixelCanvas.H) {
+        self.width = max(1, width); self.height = max(1, height)
+        data = .allocate(capacity: self.width * self.height * 4)
+        data.initialize(repeating: 0, count: self.width * self.height * 4)
+        ctx = CGContext(data: data, width: self.width, height: self.height, bitsPerComponent: 8, bytesPerRow: self.width * 4,
                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        ctx.translateBy(x: 0, y: CGFloat(Self.H))
+        ctx.translateBy(x: 0, y: CGFloat(self.height))
         ctx.scaleBy(x: 1, y: -1)
         ctx.setShouldAntialias(false)
         ctx.setAllowsFontSmoothing(false)
@@ -90,13 +93,16 @@ final class PixelCanvas {
 
     deinit { data.deallocate() }
 
-    func frame(_ draw: (CGContext) -> Void) -> CGImage? {
+    /// `offset` moves the 136×296 layout into place; `draw` gets the full canvas rect in
+    /// layout coordinates so backgrounds can reach every edge.
+    func frame(offset: CGPoint, _ draw: (CGContext, CGRect) -> Void) -> CGImage? {
         UIGraphicsPushContext(ctx)
         ctx.saveGState()
-        draw(ctx)
+        ctx.translateBy(x: offset.x, y: offset.y)
+        draw(ctx, CGRect(x: -offset.x, y: -offset.y, width: CGFloat(width), height: CGFloat(height)))
         ctx.restoreGState()
         UIGraphicsPopContext()
-        Palette.quantize(data, width: Self.W, height: Self.H)
+        Palette.quantize(data, width: width, height: height)
         return ctx.makeImage()
     }
 }

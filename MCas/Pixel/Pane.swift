@@ -14,7 +14,10 @@ final class Pane: ObservableObject {
     @Published var screen: Screen
     var onEditName: (() -> Void)?
 
-    private let canvas = PixelCanvas()
+    private var canvas = PixelCanvas()
+    private(set) var offset = CGPoint.zero
+    private var full = CGRect(x: 0, y: 0, width: 136, height: 296)
+    private static let clockFormat: DateFormatter = { let f = DateFormatter(); f.dateFormat = "h:mm"; return f }()
     private let m = Machine.shared
     private var rot: Double = 0
     private var lastFrame = CACurrentMediaTime()
@@ -39,7 +42,21 @@ final class Pane: ObservableObject {
 
     // MARK: frame
 
-    func render(at t: Double) -> CGImage? {
+    /// Size the canvas to the screen (in whole device pixels) and place the layout inside the
+    /// safe area, centered.
+    private func configure(width: Int, height: Int, safeTop: Int, safeBottom: Int) {
+        if canvas.width != width || canvas.height != height { canvas = PixelCanvas(width: width, height: height) }
+        let ox = max(0, (width - PixelCanvas.W) / 2)
+        let avail = height - safeTop - safeBottom
+        let oy = avail >= PixelCanvas.H ? safeTop + (avail - PixelCanvas.H) / 2 : max(0, (height - PixelCanvas.H) / 2)
+        offset = CGPoint(x: ox, y: oy)
+    }
+
+    /// A point on the canvas, in canvas pixels, as a point in the 136×296 layout.
+    func layoutPoint(_ canvasPoint: CGPoint) -> CGPoint { CGPoint(x: canvasPoint.x - offset.x, y: canvasPoint.y - offset.y) }
+
+    func render(at t: Double, width: Int, height: Int, safeTop: Int, safeBottom: Int) -> CGImage? {
+        configure(width: width, height: height, safeTop: safeTop, safeBottom: safeBottom)
         let now = CACurrentMediaTime()
         let dt = min(0.12, now - lastFrame)
         lastFrame = now
@@ -49,7 +66,8 @@ final class Pane: ObservableObject {
             fling *= 0.85
             if abs(fling) < 0.3 { fling = 0 }
         }
-        return canvas.frame { c in
+        return canvas.frame(offset: offset) { c, full in
+            self.full = full
             switch screen {
             case .deck: drawDeck(c, t)
             case .shelf: drawShelf(c, t)
@@ -60,7 +78,12 @@ final class Pane: ObservableObject {
     }
 
     private func chrome(_ c: CGContext, _ t: Double) {
-        Pix.text("9:41", 9, 5, Ink.cream)
+        Pix.text(Self.clockFormat.string(from: Date()), 9, 5, Ink.cream)
+        let level = UIDevice.current.batteryLevel
+        Pix.fill(c, 111, 6, 14, 7, Ink.cream); Pix.fill(c, 125, 8, 1, 3, Ink.cream)
+        Pix.fill(c, 112, 7, 12, 5, Ink.ink)
+        let cells = level < 0 ? 12 : max(1, Int((Float(12) * level).rounded()))
+        Pix.fill(c, 112, 7, CGFloat(cells), 5, level >= 0 && level < 0.2 ? Ink.red : Ink.teal)
         if m.recording && screen != .deck {
             Pix.rrect(c, 36, 3, 64, 11, 6, Ink.ink)
             if Int(t / 0.4) % 2 == 1 { Pix.circle(c, 43, 8.5, 2, Ink.red) }
@@ -70,8 +93,8 @@ final class Pane: ObservableObject {
     }
 
     private func tabs(_ c: CGContext) {
-        Pix.fill(c, 0, 266, 136, 30, Ink.hex(0x0c0c18))
-        Pix.fill(c, 0, 266, 136, 1, Ink.blue2)
+        Pix.fill(c, full.minX, 266, full.width, full.maxY - 266, Ink.hex(0x0c0c18))
+        Pix.fill(c, full.minX, 266, full.width, 1, Ink.blue2)
         for s in Screen.allCases {
             let cx = CGFloat(17 + s.rawValue * 34), on = s == screen
             Pix.text(s.title, cx, 272, on ? Ink.yellow : Ink.grey, font: on ? Pix.bold : Pix.regular, align: .center)
@@ -92,12 +115,12 @@ final class Pane: ObservableObject {
     private let bRew = CGPoint(x: 31, y: 240), bPlay = CGPoint(x: 52, y: 240), bRec = CGPoint(x: 84, y: 240), bFF = CGPoint(x: 107, y: 240)
 
     private func drawDeck(_ c: CGContext, _ t: Double) {
-        Sky.draw(c, t, Ink.hex(0x283870), Ink.hex(0x141428), Ink.hex(0x1c2c40))
+        Sky.draw(c, t, Ink.hex(0x283870), Ink.hex(0x141428), Ink.hex(0x1c2c40), in: full)
         Pix.glow(c, CGPoint(x: 68, y: 90), 78, Ink.teal.withAlphaComponent(0.6))
         chrome(c, t)
         guard let tape = m.tape else { return }
         Pix.text("ON THE MACHINE", 8, 24, Ink.mint)
-        Pix.text(tape.name.uppercased(), 8, 34, Ink.cream, font: Pix.bold)
+        Pix.marquee(c, tape.name.uppercased(), 8, 34, maxW: 82, Ink.cream, font: Pix.bold, t: t)
         if m.recording {
             if Int(t / 0.4) % 2 == 1 { Pix.circle(c, 104, 30, 3, Ink.red) }
             Pix.text("REC", 128, 26, Ink.red, font: Pix.bold, align: .right)
@@ -105,15 +128,15 @@ final class Pane: ObservableObject {
             pill(c, 94, 24, 34, "SHELF", Ink.blue2, Ink.cream)
         }
         let tl = m.timeline
-        Cassette.draw(c, cas.minX, cas.minY, cas.width, cas.height, name: tape.name, label: tape.label, ink: m.inks[tape.id], fraction: tl.fraction(m.position), rot: rot)
+        Cassette.draw(c, cas.minX, cas.minY, cas.width, cas.height, name: tape.name, label: tape.label, ink: m.inks[tape.id], fraction: tl.fraction(m.position), rot: rot, t: t)
 
         if m.recording {
             Pix.text("RECORDING", 8, 138, Ink.red, font: Pix.bold)
             Pix.text(mmss(m.recSeconds) + "  ONTO THE END", 8, 149, Ink.grey)
         } else if let i = tl.clipIndex(at: m.position) {
             let clip = tl.clips[i]
-            Pix.text(clip.name.uppercased(), 8, 138, Ink.cream, font: Pix.bold)
-            Pix.text(Naming.short(clip.date), 8, 149, Ink.grey)
+            Pix.marquee(c, clip.name.uppercased(), 8, 138, maxW: 120, Ink.cream, font: Pix.bold, t: t)
+            Pix.marquee(c, Naming.short(clip.date), 8, 149, maxW: 120, Ink.grey, t: t)
         } else {
             Pix.text("EMPTY TAPE", 8, 138, Ink.cream, font: Pix.bold)
             Pix.text("HOLD THE TAPE TO RECORD", 8, 149, Ink.grey)
@@ -173,7 +196,7 @@ final class Pane: ObservableObject {
     }
 
     private func drawShelf(_ c: CGContext, _ t: Double) {
-        Sky.draw(c, t, Ink.navy, Ink.hex(0x202850), Ink.blue)
+        Sky.draw(c, t, Ink.navy, Ink.hex(0x202850), Ink.blue, in: full)
         chrome(c, t)
         Pix.text("SHELF", 8, 20, Ink.cream, font: Pix.big)
         if !m.recording { pill(c, 94, 22, 34, "+ NEW", Ink.teal, Ink.cream) }
@@ -183,7 +206,7 @@ final class Pane: ObservableObject {
             Pix.rrect(c, 9, slot.y + 3, 121, 78, 6, Ink.ink.withAlphaComponent(0.7))
             let frac = slot.front ? m.timeline.fraction(m.position) : 0.5
             Cassette.draw(c, 8, slot.y, 120, 77, name: tape.name, label: tape.label, ink: m.inks[tape.id], fraction: frac,
-                          rot: slot.front ? rot : 0, duration: Pix.short(m.totalSeconds(tape)))
+                          rot: slot.front ? rot : 0, duration: Pix.short(m.totalSeconds(tape)), t: t + Double(slot.index))
             if slot.front && Int(t / 0.45) % 2 == 1 {
                 Pix.poly(c, [CGPoint(x: 1, y: slot.y + 34), CGPoint(x: 5, y: slot.y + 38), CGPoint(x: 1, y: slot.y + 42)], Ink.yellow)
             }
@@ -227,11 +250,11 @@ final class Pane: ObservableObject {
 
     private func drawClips(_ c: CGContext, _ t: Double) {
         let bg = Ink.hex(0x141428)
-        Sky.draw(c, t, bg, Ink.navy, bg)
+        Sky.draw(c, t, bg, Ink.navy, bg, in: full)
         chrome(c, t)
         guard let tape = m.tape else { return }
         let rs = rows(), off = headY - posToY(m.position)
-        c.saveGState(); c.clip(to: CGRect(x: 0, y: topV, width: 136, height: botV - topV))
+        c.saveGState(); c.clip(to: CGRect(x: full.minX, y: topV, width: full.width, height: botV - topV))
         for r in rs {
             let y = (off + r.y).rounded()
             if y > botV || y + r.h < topV { continue }
@@ -242,9 +265,10 @@ final class Pane: ObservableObject {
             while yy < y + r.h - 2 { Pix.fill(c, 13, yy, 2, 2, Ink.dark); yy += 6 }
             Pix.rrect(c, 24, y, 104, r.h, 4, under ? Ink.cream : Ink.blue)
             let tc = under ? Ink.dark : Ink.cream, mc = under ? Ink.brown : Ink.grey
-            Pix.text(clip.name.uppercased(), 28, y + 4, tc, font: Pix.bold)
-            Pix.text(Naming.short(clip.date), 28, y + 14, mc)
-            Pix.text(Pix.short(clip.seconds), 124, y + 14, mc, align: .right)
+            Pix.marquee(c, clip.name.uppercased(), 28, y + 4, maxW: 96, tc, font: Pix.bold, t: t + Double(r.index))
+            let dur = Pix.short(clip.seconds)
+            let dw = Pix.text(dur, 124, y + 14, mc, align: .right)
+            Pix.marquee(c, Naming.short(clip.date), 28, y + 14, maxW: 96 - ceil(dw) - 4, mc, t: t)
             if r.h >= 46 {
                 for j in 0..<24 {
                     let seedV: Double = Double(j * 13 + r.index * 7)
@@ -255,12 +279,13 @@ final class Pane: ObservableObject {
         }
         c.restoreGState()
         if rs.isEmpty { Pix.text("NOTHING ON THIS TAPE YET", 68, 140, Ink.grey, align: .center) }
-        Pix.vgrad(c, CGRect(x: 0, y: topV, width: 136, height: 14), [(0, bg), (1, bg.withAlphaComponent(0))])
-        Pix.vgrad(c, CGRect(x: 0, y: botV - 14, width: 136, height: 14), [(0, bg.withAlphaComponent(0)), (1, bg)])
+        Pix.vgrad(c, CGRect(x: full.minX, y: topV, width: full.width, height: 14), [(0, bg), (1, bg.withAlphaComponent(0))])
+        Pix.vgrad(c, CGRect(x: full.minX, y: botV - 14, width: full.width, height: 14), [(0, bg.withAlphaComponent(0)), (1, bg)])
         Pix.fill(c, 4, headY, 128, 1, Ink.red)
         Pix.poly(c, [CGPoint(x: 0, y: headY - 4), CGPoint(x: 5, y: headY), CGPoint(x: 0, y: headY + 4)], Ink.cream)
         Pix.poly(c, [CGPoint(x: 136, y: headY - 4), CGPoint(x: 131, y: headY), CGPoint(x: 136, y: headY + 4)], Ink.cream)
-        Pix.text(tape.name.uppercased(), 8, 20, Ink.cream, font: Pix.bold)
+        let pw = Pix.width(Pix.clock(m.position))
+        Pix.marquee(c, tape.name.uppercased(), 8, 20, maxW: 120 - ceil(pw) - 4, Ink.cream, font: Pix.bold, t: t)
         Pix.text(Pix.clock(m.position), 128, 20, Ink.yellow, align: .right)
         Pix.text("\(rs.count) CLIPS", 8, 31, Ink.grey)
         Pix.text("DRAG TO WIND", 128, 31, Ink.blue2, align: .right)
@@ -278,18 +303,18 @@ final class Pane: ObservableObject {
     private let tools: [(Tool?, String, CGFloat, CGFloat)] = [(.draw, "DRAW", 8, 38), (.erase, "ERASE", 50, 38), (nil, "CLEAR", 92, 36)]
 
     private func drawLabel(_ c: CGContext, _ t: Double) {
-        Sky.draw(c, t, Ink.hex(0x202850), Ink.navy, Ink.hex(0x141428))
+        Sky.draw(c, t, Ink.hex(0x202850), Ink.navy, Ink.hex(0x141428), in: full)
         chrome(c, t)
         guard let tape = m.tape else { return }
         Pix.text("LABEL", 8, 20, Ink.cream, font: Pix.big)
         pill(c, 94, 22, 34, "DONE", Ink.blue2, Ink.cream)
         let name = m.nameDraft.isEmpty ? tape.name : m.nameDraft
         Cassette.draw(c, editCas.minX, editCas.minY, editCas.width, editCas.height, name: name, label: tape.label,
-                      ink: inkWorking ?? m.inks[tape.id], fraction: m.timeline.fraction(m.position), rot: rot)
+                      ink: inkWorking ?? m.inks[tape.id], fraction: m.timeline.fraction(m.position), rot: rot, t: t)
         Pix.text("NAME", 8, 128, Ink.grey)
         Pix.rrect(c, 8, 137, 120, 15, 3, Ink.cream)
-        let w = Pix.text(name.uppercased(), 12, 141, Ink.dark, font: Pix.bold)
-        if Int(t / 0.5) % 2 == 1 { Pix.fill(c, 13 + ceil(w), 140, 1, 9, Ink.dark) }
+        let w = Pix.tail(c, name.uppercased(), 12, 141, maxW: 110, Ink.dark, font: Pix.bold)
+        if Int(t / 0.5) % 2 == 1 { Pix.fill(c, min(125, 13 + ceil(w)), 140, 1, 9, Ink.dark) }
         Pix.text("PATTERN", 8, 158, Ink.grey)
         for (i, k) in Pattern.allCases.enumerated() {
             let x = CGFloat(8 + i * 20)
