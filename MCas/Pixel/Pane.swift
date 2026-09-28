@@ -249,6 +249,18 @@ final class Pane: ObservableObject {
         Pix.fill(c, kx, y + 2, 1, 4, Ink.dark)
     }
 
+    /// Horizontal drag as wheel notches, BrightRecorder's Scrub: the tape winds at the speed
+    /// of the hand, forwards or back, with a haptic tick per notch.
+    private func windBy(_ dx: CGFloat, pixelsPerNotch: CGFloat) {
+        windCarry += dx
+        while abs(windCarry) >= pixelsPerNotch {
+            let dir = windCarry > 0 ? 1 : -1
+            m.notch(dir)
+            haptic.selectionChanged()
+            windCarry -= CGFloat(dir) * pixelsPerNotch
+        }
+    }
+
     private func scrub(to x: CGFloat) {
         let fr = Double(min(1, max(0, (x - f.left) / max(1, f.width - 1))))
         m.seek(fr * m.timeline.total)
@@ -867,13 +879,7 @@ final class Pane: ObservableObject {
         switch gesture {
         case .wind:
             if moved { press.cancel(); stopPressTimer() }
-            windCarry += p.x - lastPoint.x
-            while abs(windCarry) >= 4 {
-                let dir = windCarry > 0 ? 1 : -1
-                m.notch(dir)
-                haptic.selectionChanged()
-                windCarry -= CGFloat(dir) * 4
-            }
+            windBy(p.x - lastPoint.x, pixelsPerNotch: 4)
         case .scroll:
             if moved { renameTimer?.invalidate(); renameTimer = nil }
             let dy = p.y - lastPoint.y
@@ -882,7 +888,7 @@ final class Pane: ObservableObject {
         case .paint:
             paint(from: lastPoint, to: p)
         case .scrub:
-            if screen == .edit { editMove(p) } else { scrub(to: p.x) }
+            if screen == .edit { editMove(p) } else { windBy(p.x - lastPoint.x, pixelsPerNotch: 3) }
         default: break
         }
         lastPoint = p
@@ -944,9 +950,9 @@ final class Pane: ObservableObject {
 
     private func deckDown(_ p: CGPoint) {
         if !m.timeline.isEmpty && !m.recording && scrubRect.contains(p) {
+            // Same as a hand on the reel: drag to wind at the speed you move, and hear it.
             gesture = .scrub
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            scrub(to: p.x)
             return
         }
         if cas.contains(p) {
