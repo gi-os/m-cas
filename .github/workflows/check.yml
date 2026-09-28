@@ -1,0 +1,29 @@
+name: Check
+
+# Compiles and tests without publishing anything. A push to main ships to TestFlight, so
+# main is a bad place to find out something doesn't compile. Every other branch runs this:
+# the same build and tests, unsigned, with no upload.
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: bash ci/select-xcode.sh
+      - name: Generate project
+        run: brew install xcodegen >/dev/null && xcodegen generate
+      - name: Unit tests
+        run: bash ci/test.sh
+      - name: Compile for device (unsigned)
+        run: bash ci/build-unsigned.sh

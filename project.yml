@@ -1,0 +1,65 @@
+name: MCas
+options:
+  bundleIdPrefix: com.gios
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1"
+    DEVELOPMENT_TEAM: ""
+targets:
+  MCas:
+    type: application
+    platform: iOS
+    sources:
+      - path: MCas
+    info:
+      path: MCas/Info.plist
+      properties:
+        CFBundleDisplayName: m-cas
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen:
+          UIColorName: ""
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: m-cas records the room around you onto your tape.
+        NSLocationWhenInUseUsageDescription: m-cas names each clip after where you recorded it, like "Trastevere, Rome".
+        UIBackgroundModes: [audio]
+        UIAppFonts: [Silkscreen-Regular.ttf, Silkscreen-Bold.ttf]
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gios.mcas
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: NO
+  MCasTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: MCasTests
+    dependencies:
+      - target: MCas
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.gios.mcas.tests
+schemes:
+  MCas:
+    build:
+      targets:
+        MCas: all
+        MCasTests: [test]
+    test:
+      targets:
+        - MCasTests

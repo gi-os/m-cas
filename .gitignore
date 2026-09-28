@@ -1,0 +1,10 @@
+*.xcodeproj/
+build/
+DerivedData/
+.DS_Store
+*.ipa
+*.dSYM.zip
+fastlane/report.xml
+fastlane/README.md
+vendor/
+.bundle/

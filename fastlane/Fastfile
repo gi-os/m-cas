@@ -1,0 +1,73 @@
+# Shared by every gi-os iOS app. Per-app values live in ci/app.env.
+default_platform(:ios)
+
+def app_env
+  Hash[File.read(File.expand_path("../ci/app.env", __dir__)).scan(/^(\w+)="?([^"\n]*)"?$/)]
+end
+
+platform :ios do
+  lane :ship do
+    env = app_env
+    scheme = env["SCHEME"]
+    project = File.expand_path("../#{scheme}.xcodeproj", __dir__)
+    targets = env["TARGETS"].split(",").map { |p| p.split(":") } # [[target, bundle id], ...]
+    ids = targets.map(&:last)
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_content: ENV["ASC_KEY_P8"],
+      in_house: false
+    )
+
+    # Bundle IDs are registered here, so a new target needs no trip to the portal.
+    ids.each do |bid|
+      next if Spaceship::ConnectAPI::BundleId.find(bid)
+      Spaceship::ConnectAPI::BundleId.create(name: "#{env['APP_NAME']} #{bid.split('.').last}", identifier: bid, platform: "IOS")
+      UI.success("Registered bundle ID #{bid}")
+    end
+
+    setup_ci
+    match(
+      type: "appstore",
+      app_identifier: ids,
+      git_url: "https://github.com/gi-os/ios-certs.git",
+      storage_mode: "git",
+      api_key: api_key,
+      readonly: false
+    )
+
+    # The one thing the API cannot do is create the App Store Connect app record.
+    unless Spaceship::ConnectAPI::App.find(ids.first)
+      UI.user_error!("App Store Connect has no app for #{ids.first}. My Apps → + → New App → pick bundle ID #{ids.first}, name it #{env['APP_NAME']}, then re-run this workflow. Certificates are already made, so the re-run is quick.")
+    end
+
+    targets.each do |target, bid|
+      update_code_signing_settings(
+        path: project,
+        use_automatic_signing: false,
+        targets: [target],
+        team_id: ENV["sigh_#{bid}_appstore_team-id"],
+        profile_name: ENV["sigh_#{bid}_appstore_profile-name"],
+        code_sign_identity: "Apple Distribution",
+        bundle_identifier: bid
+      )
+    end
+
+    build_app(
+      project: project,
+      scheme: scheme,
+      configuration: "Release",
+      export_method: "app-store",
+      output_directory: "build",
+      clean: true,
+      xcargs: "CURRENT_PROJECT_VERSION=#{ENV['BUILD_NUMBER'] || '1'}"
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
+    )
+  end
+end
