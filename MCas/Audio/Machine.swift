@@ -8,13 +8,20 @@ import CoreLocation
 /// playback engine is paused.
 final class HeadState {
     var position: Double = 0
+    var level: Float = 0
     var rate: Double = 0
     var timeline = Timeline(clips: [])
     var clips: [MappedWav] = []
     var outRate: Double = 48000
 }
 
-final class LevelBox { var level: Float = 0 }
+final class LevelBox {
+    var level: Float = 0
+    private var pending: [Float] = []
+    private let lock = NSLock()
+    func push(_ p: Float) { lock.lock(); pending.append(p); lock.unlock() }
+    func drain() -> [Float] { lock.lock(); defer { pending = []; lock.unlock() }; return pending }
+}
 
 /// The tape machine: one tape on it at a time, one signed rate, one position.
 ///
@@ -47,6 +54,8 @@ final class Machine: ObservableObject {
     @Published private(set) var recording = false
     @Published private(set) var recSeconds: Double = 0
     @Published private(set) var level: Float = 0
+    /// The take being recorded, as waveform peaks, oldest first (about 12 a second).
+    @Published private(set) var recPeaks: [Float] = []
     @Published private(set) var inks: [String: UIImage] = [:]
     @Published var holdRate: Double?
     private var totals: [String: Double] = [:]
@@ -166,6 +175,12 @@ final class Machine: ObservableObject {
                 for b in bufs { b.mData?.assumingMemoryBound(to: Float.self)[f] = s }
             }
             head.position = pos
+            // Loudness of what just played, for the meter.
+            if let b = bufs.first, let d = b.mData?.assumingMemoryBound(to: Float.self), n > 0 {
+                var sum: Float = 0
+                for f in 0..<n { sum += d[f] * d[f] }
+                head.level = (sum / Float(n)).squareRoot()
+            }
             return noErr
         }
     }
@@ -192,7 +207,12 @@ final class Machine: ObservableObject {
         if recording {
             recSeconds = Date().timeIntervalSince(recStarted)
             level = levels.level
-        } else if level != 0 { level = 0 }
+            let new = levels.drain()
+            if !new.isEmpty { recPeaks.append(contentsOf: new) }
+        } else {
+            let l = r != 0 ? head.level : 0
+            if abs(l - level) > 0.001 || (l == 0 && level != 0) { level = l }
+        }
     }
 
     // MARK: transport
@@ -358,6 +378,8 @@ final class Machine: ObservableObject {
         recStarted = date
         recording = true
         recSeconds = 0
+        recPeaks = []
+        _ = levels.drain()
         clearNowPlaying()
         recPlace = "Finding where you are"
         recCoordinate = nil
@@ -383,6 +405,9 @@ final class Machine: ObservableObject {
             var sum: Float = 0
             for i in 0..<n { let v = ch[0][i]; dst[0][i] = v; sum += v * v }
             box.level = n > 0 ? (sum / Float(n)).squareRoot() : 0
+            var peak: Float = 0
+            for i in 0..<n { peak = max(peak, abs(ch[0][i])) }
+            box.push(peak)
             try? file.write(from: mono)
         }
     }

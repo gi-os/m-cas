@@ -144,6 +144,8 @@ final class Pane: ObservableObject {
         return CGRect(x: (x0 + CGFloat(i) * (w + gap)).rounded(), y: transport.minY + 4, width: w, height: transport.height - 8)
     }
     private var heldKey: Int?
+    /// The cassette flipped over to show the tape as waveform.
+    private var deckWave = false
     private var keyDownAt: Double = 0
     private var keyTimer: Timer?
 
@@ -162,8 +164,11 @@ final class Pane: ObservableObject {
             pill(c, headerPill, "SHELF", Ink.blue2, Ink.cream)
         }
         let tl = m.timeline
-        Cassette.draw(c, cas.minX, cas.minY, cas.width, cas.height, name: tape.name, label: tape.label, ink: m.inks[tape.id],
-                      fraction: tl.fraction(m.position), rot: rot, t: t)
+        if deckWave { drawDeckWave(c, cas, t) }
+        else {
+            Cassette.draw(c, cas.minX, cas.minY, cas.width, cas.height, name: tape.name, label: tape.label, ink: m.inks[tape.id],
+                          fraction: tl.fraction(m.position), rot: rot, t: t)
+        }
 
         var y = cas.maxY + 11
         if m.recording {
@@ -209,17 +214,18 @@ final class Pane: ObservableObject {
         let mx = (f.w - CGFloat(bars * 4)) / 2
         let base = transport.minY - 11
         for i in 0..<bars {
+            // A bar graph of the real level: bars light up left to right with loudness,
+            // each settling a little differently so it reads as a meter, not a block.
             var h: CGFloat = 1
-            let wobble: Double = abs(sin(t / 0.14 + Double(i) * 1.7))
-            if m.recording {
-                let lv: Double = Double(min(1, m.level * 6))
-                let jitter: Double = 0.6 + 0.4 * abs(sin(t * 7 + Double(i)))
-                h = CGFloat(1 + (lv * 11 * jitter).rounded())
-            } else if r != 0 {
-                let gain: Double = abs(r) > 1.2 ? 1 : 0.75
-                h = CGFloat(2 + (wobble * 10 * gain).rounded())
-            }
             let frac = Double(i) / Double(max(1, bars - 1))
+            if m.recording || r != 0 {
+                let db = 20 * log10(Double(max(m.level, 0.0001)))          // about -60...0
+                let lit = min(1, max(0, (db + 54) / 50))
+                if frac <= lit {
+                    let shape = 0.55 + 0.45 * abs(sin(Double(i) * 2.3 + t * 3))
+                    h = CGFloat(max(2, (12 * shape * min(1, lit * 1.3)).rounded()))
+                }
+            }
             Pix.fill(c, mx + CGFloat(i * 4), base - h, 3, h, frac > 0.84 ? Ink.red : frac > 0.68 ? Ink.yellow : Ink.teal)
         }
 
@@ -419,6 +425,62 @@ final class Pane: ObservableObject {
             UISelectionFeedbackGenerator().selectionChanged()
         }
         if clicksRect.contains(p) { m.keyClicks.toggle() }
+    }
+
+    /// The flipped cassette: what you'll hear, as waveform, with the playhead in the middle.
+    /// Takes are red; the strip underneath marks where the tape has been recorded over.
+    /// While recording, the take draws itself live to the left of the playhead.
+    private func drawDeckWave(_ c: CGContext, _ r: CGRect, _ t: Double) {
+        let tl = m.timeline
+        Pix.rrect(c, r.minX - 1, r.minY - 1, r.width + 2, r.height + 2, 6, Ink.dark)
+        Pix.rrect(c, r.minX, r.minY, r.width, r.height, 5, Ink.ink)
+        let z: Double = 10
+        let mid = (r.minX + r.width / 2).rounded()
+        let laneTop = r.minY + 6, laneH = (r.height * 0.62).rounded()
+        let cy = (laneTop + laneH / 2).rounded(), half = laneH / 2 - 2
+        let origin = Int((m.position * z).rounded(.down)) - Int(mid - r.minX)
+        c.saveGState(); c.clip(to: r.insetBy(dx: 2, dy: 2))
+        if m.recording {
+            let peaks = m.recPeaks
+            let perCol = 12.0 / z * 1.4      // peaks per column: ~12 peaks a second
+            var col = 0
+            var idx = Double(peaks.count) - 1
+            while idx >= 0 && CGFloat(col) < r.width / 2 {
+                let v = CGFloat(min(1, sqrt(Double(peaks[Int(idx)])) * 1.2))
+                let h = max(1, (v * half).rounded())
+                Pix.fill(c, mid - CGFloat(col), cy - h, 1, h * 2, Ink.red)
+                idx -= perCol; col += 1
+            }
+        } else {
+            for xi in 0..<Int(r.width) {
+                let n = Double(origin + xi)
+                let t0 = n / z, t1 = (n + 1) / z
+                guard t1 > 0, t0 <= tl.total, let si = tl.segmentIndex(at: max(0, t0)) else { continue }
+                let sg = tl.segments[si], clip = tl.clips[sg.clip]
+                let a = sg.src + (max(t0, sg.start) - sg.start), b = sg.src + (min(t1, sg.end) - sg.start)
+                var pk: Float = 0, tt = a
+                repeat { pk = max(pk, m.peak(clip.url, at: tt)); tt += 1 / Machine.peaksPerSecond } while tt < b
+                let v = CGFloat(min(1, sqrt(Double(pk)) * 1.15))
+                let h = max(1, (v * half).rounded())
+                Pix.fill(c, r.minX + CGFloat(xi), cy - h, 1, h * 2, clip.isTake ? Ink.red : Ink.clipColors[sg.clip % 6])
+            }
+        }
+        // Layers strip: base tape grey, covered stretches striped red.
+        let sy = laneTop + laneH + 4
+        for xi in 0..<Int(r.width) {
+            let t0 = Double(origin + xi) / z
+            guard t0 >= 0, t0 <= tl.total else { continue }
+            if tl.covered(t0) { if (origin + xi) % 2 == 0 { Pix.fill(c, r.minX + CGFloat(xi), sy, 1, 4, Ink.red) } }
+            else { Pix.fill(c, r.minX + CGFloat(xi), sy + 1, 1, 2, Ink.blue2) }
+        }
+        if let mk = m.mark {
+            let mx = mid + CGFloat((mk - m.position) * z).rounded()
+            Pix.fill(c, mx, r.minY + 2, 1, r.height - 4, Ink.yellow)
+        }
+        c.restoreGState()
+        Pix.fill(c, mid, r.minY + 2, 1, r.height - 4, m.recording ? Ink.red : Ink.cream)
+        Pix.poly(c, [CGPoint(x: mid - 3, y: r.minY + 2), CGPoint(x: mid + 4, y: r.minY + 2), CGPoint(x: mid, y: r.minY + 6)], m.recording ? Ink.red : Ink.cream)
+        Pix.text(m.recording ? "REC " + mmss(m.recSeconds) : "TAP FOR THE TAPE", r.minX + 5, r.maxY - 11, m.recording ? Ink.red : Ink.blue2)
     }
 
     private func drawKeys(_ c: CGContext) {
@@ -1039,7 +1101,7 @@ final class Pane: ObservableObject {
         switch gesture {
         case .wind:
             stopPressTimer()
-            if press.up(at: CACurrentMediaTime()) == .tap { m.togglePlay() }
+            if press.up(at: CACurrentMediaTime()) == .tap { deckWave.toggle(); UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
         case .hold:
             if screen == .edit { heldKey = nil } else { keyUp() }
         case .scroll:
