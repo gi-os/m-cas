@@ -128,6 +128,19 @@ platform :ios do
     bundle = env["TARGETS"].split(",").first.split(":").last
     build = latest_testflight_build_number(api_key: api_key, app_identifier: bundle, version: version)
     shots = File.expand_path("screenshots", __dir__)
+    # App Review contact: App Store Connect needs all four before it takes review notes.
+    # Set REVIEW_FIRST_NAME, REVIEW_LAST_NAME, REVIEW_EMAIL, REVIEW_PHONE as repo secrets,
+    # or fill them in once in App Store Connect and leave these unset.
+    review = nil
+    if %w[REVIEW_FIRST_NAME REVIEW_LAST_NAME REVIEW_EMAIL REVIEW_PHONE].all? { |k| !ENV[k].to_s.empty? }
+      review = {
+        first_name: ENV["REVIEW_FIRST_NAME"], last_name: ENV["REVIEW_LAST_NAME"],
+        email_address: ENV["REVIEW_EMAIL"], phone_number: ENV["REVIEW_PHONE"],
+        notes: File.read(File.expand_path("review_notes.txt", __dir__))
+      }
+    else
+      UI.important("Review contact secrets not set: leaving App Review information as it is in App Store Connect.")
+    end
     deliver(
       api_key: api_key,
       app_identifier: bundle,
@@ -139,6 +152,7 @@ platform :ios do
       skip_screenshots: !Dir.exist?(shots),
       overwrite_screenshots: true,
       force: true,
+      app_review_information: review,
       submit_for_review: ENV["SUBMIT"] == "true",
       automatic_release: false,
       precheck_include_in_app_purchases: false,

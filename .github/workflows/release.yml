@@ -24,6 +24,10 @@ jobs:
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
       SUBMIT: ${{ inputs.submit }}
+      REVIEW_FIRST_NAME: ${{ secrets.REVIEW_FIRST_NAME }}
+      REVIEW_LAST_NAME: ${{ secrets.REVIEW_LAST_NAME }}
+      REVIEW_EMAIL: ${{ secrets.REVIEW_EMAIL }}
+      REVIEW_PHONE: ${{ secrets.REVIEW_PHONE }}
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
