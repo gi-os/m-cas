@@ -52,7 +52,7 @@ final class Machine: ObservableObject {
     private var totals: [String: Double] = [:]
     @Published var nameDraft = ""
     /// What the hidden text field is renaming: the tape, or one clip's place.
-    enum Editing: Equatable { case tape, clip(URL) }
+    enum Editing: Equatable { case tape, clip(URL), take }
     @Published var editing: Editing = .tape
     /// Sky (the starry gradient), black (the palette's darkest, a blue-black), or OLED
     /// (true black, so the pixels switch off).
@@ -79,6 +79,18 @@ final class Machine: ObservableObject {
     @Published private(set) var solo: Int?
     private var mappedAll: [MappedWav] = []
     private var recTakeAt: Double?
+    private var recStartPosition: Double = 0
+
+    /// The take just recorded, waiting for you to say where it goes and what it's called.
+    struct PendingTake: Equatable {
+        var url: URL
+        var seconds: Double
+        var spot: Double       // where "HERE" puts it: the mark, or where you pressed record
+        var atSpot: Bool
+        var name: String
+        var named = false      // you typed a name, so a late place lookup won't replace it
+    }
+    @Published private(set) var pendingTake: PendingTake?
     private var recPlace = "Somewhere"
     private var recCoordinate: CLLocationCoordinate2D?
     private var lastNowPlaying: Double = 0
@@ -320,6 +332,8 @@ final class Machine: ObservableObject {
         playing = false
         head.rate = 0
         recTakeAt = mark
+        recStartPosition = position
+        pendingTake = nil
         let date = Date()
         let url = store.newClipURL(in: tape, date: date)
         let e = AVAudioEngine()
@@ -383,21 +397,28 @@ final class Machine: ObservableObject {
         endActivity()
         let oldTotal = timeline.total
         let took = recSeconds
-        if let url = recURL {
+        let at = recTakeAt
+        var saved: URL?
+        var place = Naming.fallbackPlace
+        if var url = recURL {
             recURL = nil
             // Recorded over the tape at the mark: note where, so it covers what was there.
-            if let at = recTakeAt, let t = tape {
+            if let at, let t = tape {
                 var e = Edits.load(t.url)
                 e.takes[Edits.key(url)] = at
                 e.save(t.url)
             }
-            if let place = placeFor.removeValue(forKey: url) { _ = store.renameClip(url, place: place) }
+            if let p = placeFor.removeValue(forKey: url) { url = store.renameClip(url, place: p); place = p }
+            else { place = Naming.parse(url.lastPathComponent)?.label ?? place }
+            saved = url
         }
-        let at = recTakeAt
         recTakeAt = nil
         mark = nil
         reloadCurrent()
         seek(at.map { $0 + took } ?? oldTotal)
+        if let saved {
+            pendingTake = PendingTake(url: saved, seconds: took, spot: at ?? recStartPosition, atSpot: at != nil, name: place)
+        }
     }
 
     // MARK: editing
@@ -544,8 +565,59 @@ final class Machine: ObservableObject {
         nameDraft = tape?.name ?? ""
     }
 
+    // MARK: the take just recorded
+
+    /// END: attach to the end of the tape. HERE: record over from the spot.
+    func placePendingTake(atSpot: Bool) {
+        guard var pt = pendingTake, let t = tape, pt.atSpot != atSpot else { return }
+        var e = Edits.load(t.url)
+        e.takes[Edits.key(pt.url)] = atSpot ? pt.spot : nil
+        e.save(t.url)
+        pt.atSpot = atSpot
+        pendingTake = pt
+        reloadCurrent()
+        if atSpot { seek(pt.spot) } else { seek(max(0, timeline.total - pt.seconds)) }
+    }
+
+    func beginTakeRename() {
+        guard let pt = pendingTake else { return }
+        editing = .take
+        nameDraft = pt.name
+    }
+
+    func keepPendingTake() { pendingTake = nil; editing = .tape; nameDraft = tape?.name ?? "" }
+
+    /// Throw the take away: its file and any edits for it.
+    func discardPendingTake() {
+        guard let pt = pendingTake, let t = tape else { return }
+        var e = Edits.load(t.url)
+        e.takes[Edits.key(pt.url)] = nil
+        e.trims[Edits.key(pt.url)] = nil
+        e.save(t.url)
+        try? FileManager.default.removeItem(at: pt.url)
+        pendingTake = nil
+        editing = .tape
+        nameDraft = tape?.name ?? ""
+        let p = position
+        reloadCurrent()
+        seek(min(p, timeline.total))
+    }
+
     func commitName() {
         switch editing {
+        case .take:
+            if var pt = pendingTake {
+                let name = Naming.clean(nameDraft)
+                pt.url = store.renameClip(pt.url, place: name)
+                pt.name = name
+                pt.named = true
+                pendingTake = pt
+                let p = position
+                reloadCurrent()
+                seek(p)
+            }
+            editing = .tape
+            nameDraft = tape?.name ?? ""
         case .tape: renameCurrent(nameDraft)
         case .clip(let url):
             let name = Naming.clean(nameDraft)
@@ -560,7 +632,9 @@ final class Machine: ObservableObject {
     }
 
     private func applyPlace(_ place: String, to url: URL) {
-        _ = store.renameClip(url, place: place)
+        if let pt = pendingTake, pt.url == url, pt.named { return }
+        let moved = store.renameClip(url, place: place)
+        if var pt = pendingTake, pt.url == url { pt.url = moved; pt.name = place; pendingTake = pt }
         let p = position
         reloadCurrent()
         seek(p)

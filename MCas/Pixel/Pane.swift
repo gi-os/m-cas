@@ -224,6 +224,7 @@ final class Pane: ObservableObject {
         }
 
         drawKeys(c)
+        drawTakeCard(c, t)
         tabs(c)
     }
 
@@ -314,6 +315,62 @@ final class Pane: ObservableObject {
         }
         Pix.circle(c, cx, cy, 3.5, Ink.cream)
         Pix.circle(c, cx, cy, 1.5, Ink.blue)
+    }
+
+    // MARK: the take just recorded
+
+    private var takeCard: CGRect {
+        let h: CGFloat = 86
+        return CGRect(x: f.left, y: (transport.minY - h - 6).rounded(), width: f.width, height: h)
+    }
+    private var takeName: CGRect { CGRect(x: takeCard.minX + 6, y: takeCard.minY + 18, width: takeCard.width - 12, height: 15) }
+    private func takeToggle(_ i: Int) -> CGRect {
+        let w = ((takeCard.width - 12 - 4) / 2).rounded(.down)
+        return CGRect(x: takeCard.minX + 6 + CGFloat(i) * (w + 4), y: takeCard.minY + 40, width: w, height: 16)
+    }
+    private func takeButton(_ i: Int) -> CGRect {
+        let w = ((takeCard.width - 12 - 4) / 2).rounded(.down)
+        return CGRect(x: takeCard.minX + 6 + CGFloat(i) * (w + 4), y: takeCard.minY + 63, width: w, height: 16)
+    }
+
+    private func drawTakeCard(_ c: CGContext, _ t: Double) {
+        guard let pt = m.pendingTake else { return }
+        let r = takeCard
+        Pix.rrect(c, r.minX - 1, r.minY - 1, r.width + 2, r.height + 2, 6, Ink.yellow)
+        Pix.rrect(c, r.minX, r.minY, r.width, r.height, 5, Ink.navy)
+        Pix.text("SAVE TAKE", r.minX + 6, r.minY + 5, Ink.yellow, font: Pix.bold)
+        Pix.text(mmss(pt.seconds), r.maxX - 6, r.minY + 5, Ink.grey, align: .right)
+        let nb = takeName
+        Pix.rrect(c, nb.minX, nb.minY, nb.width, nb.height, 3, Ink.cream)
+        let editingName = m.editing == .take
+        let name = editingName ? m.nameDraft : pt.name
+        let w = editingName
+            ? Pix.tail(c, name.uppercased(), nb.minX + 4, nb.minY + 4, maxW: nb.width - 10, Ink.dark, font: Pix.bold)
+            : { Pix.marquee(c, name.uppercased(), nb.minX + 4, nb.minY + 4, maxW: nb.width - 10, Ink.dark, font: Pix.bold, t: t); return CGFloat(0) }()
+        if editingName && Int(t / 0.5) % 2 == 1 { Pix.fill(c, min(nb.maxX - 4, nb.minX + 5 + ceil(w)), nb.minY + 3, 1, 9, Ink.dark) }
+        let labels = ["END", "HERE " + mmss(pt.spot)]
+        for i in 0..<2 {
+            let b = takeToggle(i)
+            let on = (i == 1) == pt.atSpot
+            Pix.rrect(c, b.minX, b.minY, b.width, b.height, 4, on ? Ink.yellow : Ink.blue)
+            Pix.marquee(c, labels[i], b.minX + 5, b.minY + 5, maxW: b.width - 10, on ? Ink.dark : Ink.cream, font: on ? Pix.bold : Pix.regular, t: t)
+        }
+        let d = takeButton(0), k = takeButton(1)
+        Pix.rrect(c, d.minX, d.minY, d.width, d.height, 4, Ink.dark)
+        Pix.text("DISCARD", d.midX, d.minY + 5, Ink.pink, align: .center)
+        Pix.rrect(c, k.minX, k.minY, k.width, k.height, 4, Ink.teal)
+        Pix.text("KEEP", k.midX, k.minY + 5, Ink.cream, font: Pix.bold, align: .center)
+    }
+
+    /// True if the take card took the tap.
+    private func takeCardDown(_ p: CGPoint) -> Bool {
+        guard m.pendingTake != nil, screen == .deck || screen == .edit, takeCard.insetBy(dx: -2, dy: -2).contains(p) else { return false }
+        if takeName.contains(p) { m.beginTakeRename(); onEditName?() }
+        else if takeToggle(0).contains(p) { m.placePendingTake(atSpot: false); haptic.selectionChanged() }
+        else if takeToggle(1).contains(p) { m.placePendingTake(atSpot: true); haptic.selectionChanged() }
+        else if takeButton(0).contains(p) { m.discardPendingTake(); UINotificationFeedbackGenerator().notificationOccurred(.warning) }
+        else if takeButton(1).contains(p) { m.keepPendingTake(); UINotificationFeedbackGenerator().notificationOccurred(.success) }
+        return true
     }
 
     // MARK: settings
@@ -439,6 +496,8 @@ final class Pane: ObservableObject {
     private var botV: CGFloat { f.tabTop - 26 }
     private var headY: CGFloat { ((topV + botV) / 2).rounded() }
     private var playBar: CGRect { CGRect(x: f.left, y: botV + 5, width: f.width, height: 16) }
+    /// The FULL button on the clip under the head, drawn this frame.
+    private var fullButton: (rect: CGRect, clip: Int)?
 
     /// One row per stretch of tape you can hear: covered parts aren't listed.
     private struct Row { let index: Int; let clip: Int; let y: CGFloat; let h: CGFloat; let seconds: Double }
@@ -470,15 +529,27 @@ final class Pane: ObservableObject {
         return tl.total
     }
 
-    private func scrollBy(_ dy: CGFloat) { m.seek(yToPos(posToY(m.position) + dy)) }
+    private func scrollBy(_ dy: CGFloat) {
+        if m.solo != nil { m.setSolo(nil) }
+        m.seek(yToPos(posToY(m.position) + dy))
+    }
+
+    /// While a whole original plays, hold the list on that clip's place on the tape.
+    private var tapePositionForClips: Double {
+        if let s = m.solo, let lay = m.timeline.layers.first(where: { $0.clip == s }) {
+            return min(lay.end, max(lay.start, lay.start + (m.soloPosition - m.timeline.clips[s].trimIn)))
+        }
+        return m.position
+    }
 
     private func drawClips(_ c: CGContext, _ t: Double) {
         let bg = m.blackBackground ? Ink.ink : Ink.hex(0x141428)
         Sky.draw(c, t, bg, Ink.navy, bg, in: f.full)
         chrome(c, t)
         guard let tape = m.tape else { return }
-        let rs = rows(), off = headY - posToY(m.position)
+        let rs = rows(), off = headY - posToY(tapePositionForClips)
         let cardX: CGFloat = 24, cardW = f.right - cardX
+        fullButton = nil
         c.saveGState(); c.clip(to: CGRect(x: 0, y: topV, width: f.w, height: botV - topV))
         for r in rs {
             let y = (off + r.y).rounded()
@@ -490,8 +561,15 @@ final class Pane: ObservableObject {
             while yy < y + r.h - 2 { Pix.fill(c, f.left + 5, yy, 2, 2, Ink.dark); yy += 6 }
             Pix.rrect(c, cardX, y, cardW, r.h, 4, under ? Ink.cream : Ink.blue)
             let tc = under ? Ink.dark : Ink.cream, mc = under ? Ink.brown : Ink.grey
-            Pix.marquee(c, clip.name.uppercased(), cardX + 4, y + 4, maxW: cardW - 8, tc, font: Pix.bold, t: t + Double(r.index))
-            let dw = Pix.text(Pix.short(clip.seconds), f.right - 4, y + 14, mc, align: .right)
+            Pix.marquee(c, clip.name.uppercased(), cardX + 4, y + 4, maxW: cardW - (under ? 44 : 8), tc, font: Pix.bold, t: t + Double(r.clip))
+            let dw = Pix.text(Pix.short(r.seconds), f.right - 4, y + 14, mc, align: .right)
+            if under {
+                let playingFull = m.solo == r.clip
+                let br = CGRect(x: f.right - 34, y: y + 3, width: 30, height: 10)
+                Pix.rrect(c, br.minX, br.minY, br.width, br.height, 4, playingFull ? Ink.purple : Ink.dark)
+                Pix.text(playingFull ? "STOP" : "FULL", br.midX, br.minY + 2, Ink.cream, align: .center)
+                fullButton = (br, r.clip)
+            }
             Pix.marquee(c, Naming.short(clip.date), cardX + 4, y + 14, maxW: cardW - 12 - ceil(dw), mc, t: t)
             if r.h >= 46 {
                 let n = Int((cardW - 8) / 4)
@@ -519,7 +597,8 @@ final class Pane: ObservableObject {
         Pix.rrect(c, pb.minX, pb.minY, pb.width, pb.height, 8, m.playing ? Ink.blue2 : Ink.teal)
         if m.playing { Pix.fill(c, pb.minX + 10, pb.minY + 4, 2, 8, Ink.cream); Pix.fill(c, pb.minX + 14, pb.minY + 4, 2, 8, Ink.cream) }
         else { Pix.poly(c, [CGPoint(x: pb.minX + 10, y: pb.minY + 4), CGPoint(x: pb.minX + 16, y: pb.minY + 8), CGPoint(x: pb.minX + 10, y: pb.minY + 12)], Ink.cream) }
-        Pix.text(m.playing ? "PLAYING" : "PLAY FROM HERE", pb.midX + 6, pb.minY + 4, Ink.cream, align: .center)
+        let pbText = m.solo != nil ? (m.playing ? "PLAYING THE WHOLE RECORDING" : "WHOLE RECORDING") : (m.playing ? "PLAYING" : "PLAY FROM HERE")
+        Pix.marquee(c, pbText, pb.minX + 22, pb.minY + 4, maxW: pb.width - 26, Ink.cream, t: t)
         if case .clip = m.editing {
             let box = CGRect(x: f.left, y: headY - 20, width: f.width, height: 30)
             Pix.rrect(c, box.minX - 1, box.minY - 1, box.width + 2, box.height + 2, 5, Ink.yellow)
@@ -629,6 +708,23 @@ final class Pane: ObservableObject {
     private func xFor(_ t: Double) -> CGFloat { playheadX + CGFloat(t - editPosition) * zoom }
     private func tFor(_ x: CGFloat) -> Double { editPosition + Double((x - playheadX) / zoom) }
 
+    /// Columns are locked to the tape, not the screen: column n always covers tape seconds
+    /// [n/zoom, (n+1)/zoom), so the waveform slides a whole pixel at a time instead of
+    /// resampling (and shimmering) as the playhead moves.
+    private var originColumn: Int { Int((editPosition * Double(zoom)).rounded(.down)) - Int(playheadX) }
+    private func columnSpan(_ xi: Int) -> (Double, Double) {
+        let n = Double(originColumn + xi), z = Double(zoom)
+        return (n / z, (n + 1) / z)
+    }
+
+    /// Loudest point of a clip's file between two source times.
+    private func peakMax(_ url: URL, _ a: Double, _ b: Double) -> Float {
+        let step = 1 / Machine.peaksPerSecond
+        var t = a, m: Float = 0
+        repeat { m = max(m, self.m.peak(url, at: t)); t += step } while t < b
+        return m
+    }
+
     private func waveColumn(_ c: CGContext, x: CGFloat, mid: CGFloat, half: CGFloat, peak: Float, color: UIColor) {
         let v = CGFloat(min(1, sqrt(Double(peak)) * 1.15))
         let h = max(1, (v * half).rounded())
@@ -694,6 +790,7 @@ final class Pane: ObservableObject {
             Pix.marquee(c, m.mark == nil ? "MARK SETS WHERE ● RECORDS OVER" : "● RECORDS OVER FROM THE MARK", f.left, y, maxW: f.width, Ink.grey, t: t)
         }
         drawEditKeys(c)
+        drawTakeCard(c, t)
         tabs(c)
     }
 
@@ -703,13 +800,12 @@ final class Pane: ObservableObject {
         let mid = (laneTop + trackLaneH / 2).rounded(), half = trackLaneH / 2 - 3
         Pix.fill(c, 0, laneTop, f.w, trackLaneH, Ink.ink)
         for xi in 0..<Int(f.w) {
-            let x = CGFloat(xi)
-            let tt = tFor(x)
-            guard tt >= 0, tt <= tl.total, let si = tl.segmentIndex(at: tt) else { continue }
+            let (t0, t1) = columnSpan(xi)
+            guard t1 > 0, t0 <= tl.total, let si = tl.segmentIndex(at: max(0, t0)) else { continue }
             let sg = tl.segments[si], clip = tl.clips[sg.clip]
-            let src = sg.src + (tt - sg.start)
+            let a = sg.src + (max(t0, sg.start) - sg.start), b = sg.src + (min(t1, sg.end) - sg.start)
             let color: UIColor = sg.clip == selectedClip ? Ink.cream : (clip.isTake ? Ink.red : Ink.clipColors[sg.clip % 6])
-            waveColumn(c, x: x, mid: mid, half: half, peak: m.peak(clip.url, at: src), color: color)
+            waveColumn(c, x: CGFloat(xi), mid: mid, half: half, peak: peakMax(clip.url, a, b), color: color)
         }
         for sg in tl.segments {
             let x = xFor(sg.start).rounded()
@@ -726,13 +822,14 @@ final class Pane: ObservableObject {
         let mid = (laneTop + baseLaneH / 2).rounded(), half = baseLaneH / 2 - 3
         Pix.fill(c, 0, laneTop, f.w, baseLaneH, Ink.ink)
         for xi in 0..<Int(f.w) {
-            let x = CGFloat(xi), tt = tFor(x)
-            guard let lay = base.first(where: { tt >= $0.start && tt < $0.end }) else { continue }
+            let (t0, t1) = columnSpan(xi)
+            guard let lay = base.first(where: { t0 >= $0.start && t0 < $0.end }) else { continue }
             let clip = tl.clips[lay.clip]
-            let hidden = tl.covered(tt)
-            if hidden && xi % 2 == 1 { continue }
+            let hidden = tl.covered(t0)
+            if hidden && (originColumn + xi) % 2 != 0 { continue }
             let color: UIColor = lay.clip == selectedClip ? Ink.cream : (hidden ? Ink.blue2 : Ink.clipColors[lay.clip % 6])
-            waveColumn(c, x: x, mid: mid, half: half, peak: m.peak(clip.url, at: lay.src + (tt - lay.start)), color: color)
+            let a = lay.src + (t0 - lay.start), b = lay.src + (min(t1, lay.end) - lay.start)
+            waveColumn(c, x: CGFloat(xi), mid: mid, half: half, peak: peakMax(clip.url, a, b), color: color)
         }
         for (k, lay) in takeLayers.prefix(maxTakeLanes).enumerated() {
             let y = laneTop + baseLaneH + 3 + CGFloat(k) * (takeLaneH + 3)
@@ -741,9 +838,11 @@ final class Pane: ObservableObject {
             Pix.fill(c, x0, y, x1 - x0, takeLaneH, Ink.hex(0x281018))
             let clip = tl.clips[lay.clip]
             for xi in Int(x0)..<Int(x1) {
-                let tt = tFor(CGFloat(xi))
+                let (t0, t1) = columnSpan(xi)
+                guard t0 >= lay.start - 1e-6, t0 < lay.end else { continue }
                 let color: UIColor = lay.clip == selectedClip ? Ink.cream : Ink.red
-                waveColumn(c, x: CGFloat(xi), mid: y + takeLaneH / 2, half: takeLaneH / 2 - 2, peak: m.peak(clip.url, at: lay.src + (tt - lay.start)), color: color)
+                let a = lay.src + (t0 - lay.start), b = lay.src + (min(t1, lay.end) - lay.start)
+                waveColumn(c, x: CGFloat(xi), mid: y + takeLaneH / 2, half: takeLaneH / 2 - 2, peak: peakMax(clip.url, a, b), color: color)
             }
         }
         if let s = m.solo, let lay = tl.layers.first(where: { $0.clip == s }) {
@@ -901,6 +1000,7 @@ final class Pane: ObservableObject {
             switchTo(Screen.tabs[min(n - 1, max(0, Int(p.x / (f.w / CGFloat(n)))))])
             return
         }
+        if takeCardDown(p) { return }
         switch screen {
         case .deck: deckDown(p)
         case .shelf: shelfDown(p)
@@ -946,6 +1046,10 @@ final class Pane: ObservableObject {
             renameTimer?.invalidate(); renameTimer = nil
             if renamedOnHold { renamedOnHold = false; return }
             if moved { fling = -lastDy }
+            else if let fb = fullButton, fb.rect.insetBy(dx: -3, dy: -4).contains(p) {
+                if m.solo == fb.clip { m.setSolo(nil) } else { m.setSolo(fb.clip); m.play() }
+                UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+            }
             else if playBar.contains(p) { m.togglePlay() }
             else if p.y >= topV && p.y <= botV {
                 let off = headY - posToY(m.position)
@@ -981,7 +1085,7 @@ final class Pane: ObservableObject {
     }
 
     private func switchTo(_ s: Screen) {
-        if screen == .edit && s != .edit { m.setSolo(nil) }
+        if (screen == .edit || screen == .clips) && s != screen { m.setSolo(nil) }
         if screen == .label && s != .label && m.editing == .tape { m.renameCurrent(m.nameDraft) }
         screen = s
     }
