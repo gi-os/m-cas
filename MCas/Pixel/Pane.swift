@@ -146,6 +146,9 @@ final class Pane: ObservableObject {
     private var heldKey: Int?
     /// The cassette flipped over to show the tape as waveform.
     private var deckWave = false
+    /// Pixels per second in the flipped view; pinch to change.
+    private var deckZoom: CGFloat = 10
+    private var pinchBase: CGFloat?
     private var keyDownAt: Double = 0
     private var keyTimer: Timer?
 
@@ -204,15 +207,14 @@ final class Pane: ObservableObject {
         y += 15
         drawScrubber(c, y)
         y += 14
-        Pix.text(Pix.clock(m.position), f.left, y, Ink.cream)
         let r = m.rate
-        Pix.text((r < 0 ? "-" : "") + String(format: "%.1fX", abs(r)), f.w / 2, y, abs(r) > 1.1 ? Ink.yellow : Ink.mint, align: .center)
-        Pix.text(Pix.clock(tl.total), f.right, y, Ink.grey, align: .right)
+        let counterBottom = drawCounter(c, y - 2, t)
 
         // Level meter just above the transport; the space between grows on taller screens.
         let bars = Int((f.width - 16) / 4)
         let mx = (f.w - CGFloat(bars * 4)) / 2
         let base = transport.minY - 11
+        let maxBar = max(2, min(12, base - counterBottom - 4))
         for i in 0..<bars {
             // A bar graph of the real level: bars light up left to right with loudness,
             // each settling a little differently so it reads as a meter, not a block.
@@ -223,7 +225,7 @@ final class Pane: ObservableObject {
                 let lit = min(1, max(0, (db + 54) / 50))
                 if frac <= lit {
                     let shape = 0.55 + 0.45 * abs(sin(Double(i) * 2.3 + t * 3))
-                    h = CGFloat(max(2, (12 * shape * min(1, lit * 1.3)).rounded()))
+                    h = CGFloat(max(2, (Double(maxBar) * shape * min(1, lit * 1.3)).rounded()))
                 }
             }
             Pix.fill(c, mx + CGFloat(i * 4), base - h, 3, h, frac > 0.84 ? Ink.red : frac > 0.68 ? Ink.yellow : Ink.teal)
@@ -427,6 +429,71 @@ final class Pane: ObservableObject {
         if clicksRect.contains(p) { m.keyClicks.toggle() }
     }
 
+    /// A tape counter: number wheels that roll up when a digit changes, like the mechanical
+    /// ones on a deck. Minutes and seconds (hours when the tape is long). The speed shows
+    /// only while winding; otherwise the tape's length.
+    private var wheelShown: [Int] = []
+    private var wheelFrom: [Int] = []
+    private var wheelAt: [Double] = []
+
+    private func drawCounter(_ c: CGContext, _ y: CGFloat, _ t: Double) -> CGFloat {
+        let secs = Int(max(0, m.position))
+        var digits = [secs / 60 / 10 % 10, secs / 60 % 10, secs % 60 / 10, secs % 10]
+        if m.timeline.total >= 3600 || secs >= 3600 { digits.insert(secs / 3600 % 10, at: 0) }
+        if wheelShown.count != digits.count { wheelShown = digits; wheelFrom = digits; wheelAt = Array(repeating: 0, count: digits.count) }
+        let now = CACurrentMediaTime()
+        for i in digits.indices where digits[i] != wheelShown[i] {
+            wheelFrom[i] = wheelShown[i]; wheelShown[i] = digits[i]; wheelAt[i] = now
+        }
+        let bw: CGFloat = 13, bh: CGFloat = 19, gap: CGFloat = 2
+        var x = f.left
+        for i in digits.indices {
+            if (digits.count == 4 && i == 2) || (digits.count == 5 && (i == 1 || i == 3)) {
+                Pix.fill(c, x, y + 6, 2, 2, Ink.grey); Pix.fill(c, x, y + 12, 2, 2, Ink.grey); x += 4
+            }
+            let box = CGRect(x: x, y: y, width: bw, height: bh)
+            Pix.rrect(c, box.minX - 1, box.minY - 1, box.width + 2, box.height + 2, 3, Ink.dark)
+            Pix.rrect(c, box.minX, box.minY, box.width, box.height, 2, Ink.ink)
+            c.saveGState(); c.clip(to: box.insetBy(dx: 1, dy: 1))
+            let p = min(1, (now - wheelAt[i]) / 0.16)
+            let roll = CGFloat((1 - p) * Double(bh)).rounded()
+            if roll > 0 { Pix.text("\(wheelFrom[i])", box.midX + 1, box.minY + 2 - (bh - roll), Ink.cream, font: Pix.big, align: .center) }
+            Pix.text("\(digits[i])", box.midX + 1, box.minY + 2 + roll, Ink.cream, font: Pix.big, align: .center)
+            c.restoreGState()
+            // the wheel's curve: a darker band top and bottom
+            Pix.fill(c, box.minX + 1, box.minY + 1, box.width - 2, 2, Ink.navy)
+            Pix.fill(c, box.minX + 1, box.maxY - 3, box.width - 2, 2, Ink.navy)
+            x += bw + gap
+        }
+        let r = m.rate
+        if abs(r) > 0.01 && abs(r - 1) > 0.01 {
+            let arrows = r < 0 ? "<<" : ">>"
+            Pix.text(String(format: "%.0fX ", abs(r)) + arrows, f.right, y + 6, Ink.yellow, font: Pix.bold, align: .right)
+        } else {
+            Pix.text(Pix.clock(m.timeline.total), f.right, y + 3, Ink.grey, align: .right)
+            Pix.text(m.playing ? "PLAY" : (m.recording ? "REC" : "STOP"), f.right, y + 12, m.recording ? Ink.red : (m.playing ? Ink.mint : Ink.blue2), align: .right)
+        }
+        return y + bh + 1
+    }
+
+    /// Place names riding along the top of the tape as it scrolls: one per stretch, starting
+    /// at its first pixel on screen and cut off where the next begins.
+    private func drawClipLabels(_ c: CGContext, in r: CGRect, y: CGFloat, xFor: (Double) -> CGFloat, t: Double) {
+        let tl = m.timeline
+        for sg in tl.segments {
+            let x0 = xFor(sg.start).rounded(), x1 = xFor(sg.end).rounded()
+            guard x1 > r.minX + 2, x0 < r.maxX - 2 else { continue }
+            let clip = tl.clips[sg.clip]
+            let lx = max(r.minX + 3, x0 + 2)
+            let w = min(x1, r.maxX - 2) - lx - 2
+            if x0 >= r.minX { Pix.fill(c, x0, y, 1, 8, clip.isTake ? Ink.red : Ink.clipColors[sg.clip % 6]) }
+            guard w > 10 else { continue }
+            c.saveGState(); c.clip(to: CGRect(x: lx, y: y - 1, width: w, height: 10))
+            Pix.text(clip.name.uppercased(), lx, y, clip.isTake ? Ink.pink : Ink.grey)
+            c.restoreGState()
+        }
+    }
+
     /// The flipped cassette: what you'll hear, as waveform, with the playhead in the middle.
     /// Takes are red; the strip underneath marks where the tape has been recorded over.
     /// While recording, the take draws itself live to the left of the playhead.
@@ -434,15 +501,15 @@ final class Pane: ObservableObject {
         let tl = m.timeline
         Pix.rrect(c, r.minX - 1, r.minY - 1, r.width + 2, r.height + 2, 6, Ink.dark)
         Pix.rrect(c, r.minX, r.minY, r.width, r.height, 5, Ink.ink)
-        let z: Double = 10
+        let z = Double(deckZoom)
         let mid = (r.minX + r.width / 2).rounded()
-        let laneTop = r.minY + 6, laneH = (r.height * 0.62).rounded()
+        let laneTop = r.minY + 14, laneH = (r.height * 0.56).rounded()
         let cy = (laneTop + laneH / 2).rounded(), half = laneH / 2 - 2
         let origin = Int((m.position * z).rounded(.down)) - Int(mid - r.minX)
         c.saveGState(); c.clip(to: r.insetBy(dx: 2, dy: 2))
         if m.recording {
             let peaks = m.recPeaks
-            let perCol = 12.0 / z * 1.4      // peaks per column: ~12 peaks a second
+            let perCol = 12.0 / z      // peaks per column: ~12 peaks a second
             var col = 0
             var idx = Double(peaks.count) - 1
             while idx >= 0 && CGFloat(col) < r.width / 2 {
@@ -476,6 +543,10 @@ final class Pane: ObservableObject {
         if let mk = m.mark {
             let mx = mid + CGFloat((mk - m.position) * z).rounded()
             Pix.fill(c, mx, r.minY + 2, 1, r.height - 4, Ink.yellow)
+        }
+        if !m.recording {
+            let pos = m.position
+            drawClipLabels(c, in: r, y: r.minY + 4, xFor: { mid + CGFloat(($0 - pos) * z) }, t: t)
         }
         c.restoreGState()
         Pix.fill(c, mid, r.minY + 2, 1, r.height - 4, m.recording ? Ink.red : Ink.cream)
@@ -736,9 +807,8 @@ final class Pane: ObservableObject {
     // MARK: edit — the tape as tracks
 
     /// Pixels per second of tape, and the steps + and − move through.
-    private static let zooms: [CGFloat] = [0.5, 1, 2, 4, 8, 16, 32, 64]
-    private var zoomIndex = 4
-    private var zoom: CGFloat { Pane.zooms[zoomIndex] }
+    private var editZoom: CGFloat = 8
+    private var zoom: CGFloat { editZoom }
     private var layersMode = false
     private var selectedClip: Int?
     private var editDrag: EditDrag = .none
@@ -873,6 +943,7 @@ final class Pane: ObservableObject {
             let x = xFor(sg.start).rounded()
             if x >= 0 && x < f.w { Pix.fill(c, x, laneTop, 1, trackLaneH, Ink.navy) }
         }
+        drawClipLabels(c, in: CGRect(x: 0, y: laneTop, width: f.w, height: trackLaneH), y: laneTop + 3, xFor: { self.xFor($0) }, t: t)
         drawHandles(c, top: laneTop, height: trackLaneH)
     }
 
@@ -978,8 +1049,8 @@ final class Pane: ObservableObject {
             if !layersMode { m.setSolo(nil) }
             return
         }
-        if zoomOut.insetBy(dx: -2, dy: -4).contains(p) { zoomIndex = max(0, zoomIndex - 1); return }
-        if zoomIn.insetBy(dx: -2, dy: -4).contains(p) { zoomIndex = min(Pane.zooms.count - 1, zoomIndex + 1); return }
+        if zoomOut.insetBy(dx: -2, dy: -4).contains(p) { editZoom = max(0.5, editZoom / 2); return }
+        if zoomIn.insetBy(dx: -2, dy: -4).contains(p) { editZoom = min(64, editZoom * 2); return }
         if let i = (0..<4).first(where: { key($0).insetBy(dx: -1, dy: -4).contains(p) }) {
             heldKey = i
             gesture = .hold
@@ -1053,6 +1124,31 @@ final class Pane: ObservableObject {
         }
     }
 
+    // MARK: pinch
+
+    private var pinching = false
+
+    /// Pinch zooms the flipped Deck and the editor. A pinch cancels whatever one finger was
+    /// doing, so zooming never winds the tape or records.
+    func pinch(_ scale: CGFloat) {
+        guard (screen == .deck && deckWave) || screen == .edit else { return }
+        if !pinching {
+            pinching = true
+            press.cancel(); stopPressTimer()
+            if gesture == .scrub && screen == .deck { shuttleRelease() }
+            gesture = .none
+            pinchBase = screen == .edit ? editZoom : deckZoom
+        }
+        let z = max(0.5, min(64, (pinchBase ?? 8) * scale))
+        if screen == .edit { editZoom = z } else { deckZoom = z }
+    }
+
+    func pinchEnded() {
+        pinching = false
+        pinchBase = nil
+        haptic.selectionChanged()
+    }
+
     // MARK: input
 
     func down(_ p: CGPoint) {
@@ -1076,7 +1172,7 @@ final class Pane: ObservableObject {
     }
 
     func move(_ p: CGPoint) {
-        guard let d = downPoint else { return }
+        guard let d = downPoint, !pinching else { return }
         if hypot(p.x - d.x, p.y - d.y) > 3 { moved = true }
         switch gesture {
         case .wind:
@@ -1098,6 +1194,7 @@ final class Pane: ObservableObject {
 
     func up(_ p: CGPoint) {
         defer { downPoint = nil; gesture = .none }
+        if pinching { stopPressTimer(); press.cancel(); return }
         switch gesture {
         case .wind:
             stopPressTimer()

@@ -41,6 +41,11 @@ struct PaneView: View {
                     }
                     .onEnded { v in touching = false; pane.up(toCanvas(v.location)) }
             )
+            .simultaneousGesture(
+                MagnifyGesture()
+                    .onChanged { v in pane.pinch(v.magnification) }
+                    .onEnded { _ in pane.pinchEnded() }
+            )
             .offset(x: (geo.size.width - wPt) / 2, y: (geo.size.height - hPt) / 2)
             .accessibilityElement()
             .accessibilityLabel(Text("m-cas \(pane.screen.title.lowercased())"))
