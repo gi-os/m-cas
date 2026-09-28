@@ -35,7 +35,7 @@ struct RootView: View {
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
                     .submitLabel(.done)
-                    .onSubmit { machine.renameCurrent(machine.nameDraft) }
+                    .onSubmit { machine.commitName() }
                     .onChange(of: machine.nameDraft) { _, v in if v.count > 24 { machine.nameDraft = String(v.prefix(24)) } }
                     .frame(width: 1, height: 1)
                     .opacity(0.01)
@@ -55,7 +55,7 @@ struct RootView: View {
             main.onEditName = { editingName = true }
             side.onEditName = { editingName = true }
         }
-        .onChange(of: editingName) { _, on in if !on { machine.renameCurrent(machine.nameDraft) } }
+        .onChange(of: editingName) { _, on in if !on { machine.commitName() } }
         .onChange(of: phase) { _, p in if p != .active { machine.savePosition() } }
     }
 }

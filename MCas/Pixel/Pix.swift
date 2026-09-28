@@ -108,6 +108,7 @@ enum Sky {
     }()
 
     static func draw(_ c: CGContext, _ t: Double, _ top: UIColor, _ mid: UIColor, _ bot: UIColor, in full: CGRect) {
+        if Machine.shared.blackBackground { Pix.fill(c, full.minX, full.minY, full.width, full.height, Ink.ink); return }
         Pix.vgrad(c, full, [(0, top), (0.5, mid), (1, bot)])
         // Stars tile across the whole canvas, not just the layout box.
         let cols = Int(ceil(full.width / 136)) + 1, rows = Int(ceil(full.height / 296)) + 1

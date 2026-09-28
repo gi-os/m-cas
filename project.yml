@@ -7,7 +7,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1.2"
+    MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
     TARGETED_DEVICE_FAMILY: "1"
     DEVELOPMENT_TEAM: ""
@@ -17,6 +17,9 @@ targets:
     platform: iOS
     sources:
       - path: MCas
+      - path: Shared
+    dependencies:
+      - target: MCasWidgets
     info:
       path: MCas/Info.plist
       properties:
@@ -30,6 +33,7 @@ targets:
         NSLocationWhenInUseUsageDescription: m-cas names each clip after where you recorded it, like "Trastevere, Rome".
         UIBackgroundModes: [audio]
         UIAppFonts: [Silkscreen-Regular.ttf, Silkscreen-Bold.ttf]
+        NSSupportsLiveActivities: true
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UIStatusBarHidden: true
@@ -42,8 +46,31 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gios.mcas
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) MCAS_APP"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
+  MCasWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: MCasWidgets
+      - path: Shared
+      - path: MCas/Resources/Silkscreen-Regular.ttf
+      - path: MCas/Resources/Silkscreen-Bold.ttf
+    info:
+      path: MCasWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: m-cas
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UIAppFonts: [Silkscreen-Regular.ttf, Silkscreen-Bold.ttf]
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gios.mcas.widgets
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
   MCasTests:
     type: bundle.unit-test
     platform: iOS

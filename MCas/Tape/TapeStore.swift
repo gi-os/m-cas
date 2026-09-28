@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import CoreLocation
 
 struct ClipInfo: Equatable {
     var url: URL
@@ -95,6 +96,28 @@ final class TapeStore {
 
     func writeLabel(_ url: URL, _ spec: LabelSpec) {
         try? (spec.line + "\n").write(to: url.appendingPathComponent("pattern"), atomically: true, encoding: .utf8)
+    }
+
+    // MARK: where each clip was recorded
+
+    /// `places.json` in the tape folder: clip timestamp → [lat, lon]. Keyed by the timestamp,
+    /// which never changes when a clip is renamed.
+    private func placesURL(_ folder: URL) -> URL { folder.appendingPathComponent("places.json") }
+
+    private func placeKey(_ clip: URL) -> String { String(clip.lastPathComponent.prefix(17)) }
+
+    func setCoordinate(_ c: CLLocationCoordinate2D, for clip: URL) {
+        let folder = clip.deletingLastPathComponent()
+        var map = (try? JSONDecoder().decode([String: [Double]].self, from: Data(contentsOf: placesURL(folder)))) ?? [:]
+        map[placeKey(clip)] = [c.latitude, c.longitude]
+        if let d = try? JSONEncoder().encode(map) { try? d.write(to: placesURL(folder)) }
+    }
+
+    func coordinate(for clip: URL) -> CLLocationCoordinate2D? {
+        let folder = clip.deletingLastPathComponent()
+        guard let map = try? JSONDecoder().decode([String: [Double]].self, from: Data(contentsOf: placesURL(folder))),
+              let v = map[placeKey(clip)], v.count == 2 else { return nil }
+        return CLLocationCoordinate2D(latitude: v[0], longitude: v[1])
     }
 
     func inkURL(_ tape: TapeInfo) -> URL { tape.url.appendingPathComponent("ink.png") }

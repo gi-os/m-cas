@@ -1,5 +1,8 @@
 import AVFoundation
 import UIKit
+import MediaPlayer
+import ActivityKit
+import CoreLocation
 
 /// Values the audio thread reads. Plain stores; the clip array is only swapped while the
 /// playback engine is paused.
@@ -36,6 +39,16 @@ final class Machine: ObservableObject {
     @Published var holdRate: Double?
     private var totals: [String: Double] = [:]
     @Published var nameDraft = ""
+    /// What the hidden text field is renaming: the tape, or one clip's place.
+    enum Editing: Equatable { case tape, clip(URL) }
+    @Published var editing: Editing = .tape
+    @Published var blackBackground = UserDefaults.standard.bool(forKey: "blackBackground") {
+        didSet { UserDefaults.standard.set(blackBackground, forKey: "blackBackground") }
+    }
+    private var activity: Activity<RecordingAttributes>?
+    private var recPlace = "Somewhere"
+    private var recCoordinate: CLLocationCoordinate2D?
+    private var lastNowPlaying: Double = 0
 
     let store = TapeStore()
     private let engine = AVAudioEngine()
@@ -82,6 +95,7 @@ final class Machine: ObservableObject {
         load(tapes.firstIndex { $0.id == last } ?? tapes.count - 1)
 
         ticker = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.tick() }
+        setupRemoteCommands()
         NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] _ in
             self?.playing = false
             try? self?.engine.start()
@@ -124,6 +138,7 @@ final class Machine: ObservableObject {
         if rate != r { rate = r }
         let p = head.position
         if abs(p - position) > 0.0005 { position = p }
+        if now - lastNowPlaying > 1 { lastNowPlaying = now; updateNowPlaying() }
         if recording {
             recSeconds = Date().timeIntervalSince(recStarted)
             level = levels.level
@@ -148,6 +163,48 @@ final class Machine: ObservableObject {
     func notch(_ dir: Int) { scrub.notch(dir, at: CACurrentMediaTime()) }
 
     func play() { if !timeline.isEmpty { playing = true } }
+
+    /// A tap on ◀◀ or ▶▶: back to the start of this clip (or the one before, if you're
+    /// already near its start), or on to the next clip.
+    func skip(_ dir: Int) {
+        guard let i = timeline.clipIndex(at: position) else { return }
+        if dir < 0 {
+            let start = timeline.start(of: i)
+            seek(position - start > 2 || i == 0 ? start : timeline.start(of: i - 1))
+        } else if i + 1 < timeline.clips.count {
+            seek(timeline.start(of: i + 1))
+        } else {
+            seek(timeline.total)
+        }
+    }
+
+    // MARK: lock screen and Control Center
+
+    private func setupRemoteCommands() {
+        let c = MPRemoteCommandCenter.shared()
+        c.playCommand.addTarget { [weak self] _ in self?.play(); return .success }
+        c.pauseCommand.addTarget { [weak self] _ in self?.playing = false; return .success }
+        c.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
+        c.nextTrackCommand.addTarget { [weak self] _ in self?.skip(1); return .success }
+        c.previousTrackCommand.addTarget { [weak self] _ in self?.skip(-1); return .success }
+        c.changePlaybackPositionCommand.addTarget { [weak self] e in
+            guard let e = e as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            self?.seek(e.positionTime); return .success
+        }
+    }
+
+    private func updateNowPlaying() {
+        guard let t = tape, !timeline.isEmpty else { MPNowPlayingInfoCenter.default().nowPlayingInfo = nil; return }
+        let clip = clipIndex.map { timeline.clips[$0] }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: clip?.name ?? t.name,
+            MPMediaItemPropertyArtist: t.name,
+            MPMediaItemPropertyAlbumTitle: clip.map { Naming.short($0.date) } ?? "m-cas",
+            MPMediaItemPropertyPlaybackDuration: timeline.total,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
+            MPNowPlayingInfoPropertyPlaybackRate: playing ? rate : 0
+        ]
+    }
 
     // MARK: recording
 
@@ -188,9 +245,17 @@ final class Machine: ObservableObject {
         recStarted = date
         recording = true
         recSeconds = 0
-        places.lookup { [weak self] place in
-            guard let self, let place else { return }
-            if self.recURL == url { self.placeFor[url] = place } else { self.applyPlace(place, to: url) }
+        recPlace = "Finding where you are"
+        recCoordinate = nil
+        startActivity(tape: tape.name, started: date)
+        places.lookup { [weak self] fix in
+            guard let self, let fix else { return }
+            if let c = fix.coordinate { self.store.setCoordinate(c, for: url) }
+            if self.recURL == url {
+                self.placeFor[url] = fix.name
+                self.recPlace = fix.name
+                self.updateActivity()
+            } else { self.applyPlace(fix.name, to: url) }
         }
     }
 
@@ -215,6 +280,7 @@ final class Machine: ObservableObject {
         recEngine = nil
         recFile = nil
         recording = false
+        endActivity()
         let oldTotal = timeline.total
         if let url = recURL {
             recURL = nil
@@ -222,6 +288,58 @@ final class Machine: ObservableObject {
         }
         reloadCurrent()
         seek(oldTotal)
+    }
+
+    // MARK: Live Activity
+
+    private func startActivity(tape: String, started: Date) {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        let state = RecordingAttributes.ContentState(place: recPlace, started: started)
+        activity = try? Activity.request(attributes: RecordingAttributes(tape: tape), content: .init(state: state, staleDate: nil))
+    }
+
+    private func updateActivity() {
+        guard let a = activity else { return }
+        let state = RecordingAttributes.ContentState(place: recPlace, started: recStarted)
+        Task { await a.update(.init(state: state, staleDate: nil)) }
+    }
+
+    private func endActivity() {
+        guard let a = activity else { return }
+        activity = nil
+        let state = RecordingAttributes.ContentState(place: recPlace, started: recStarted)
+        Task { await a.end(.init(state: state, staleDate: nil), dismissalPolicy: .immediate) }
+    }
+
+    // MARK: renaming
+
+    /// Rename a clip's place. If we know where it was recorded, that spot keeps the name:
+    /// the next clip recorded there is called the same thing.
+    func beginClipRename(_ index: Int) {
+        guard timeline.clips.indices.contains(index) else { return }
+        let c = timeline.clips[index]
+        editing = .clip(c.url)
+        nameDraft = c.name
+    }
+
+    func beginTapeRename() {
+        editing = .tape
+        nameDraft = tape?.name ?? ""
+    }
+
+    func commitName() {
+        switch editing {
+        case .tape: renameCurrent(nameDraft)
+        case .clip(let url):
+            let name = Naming.clean(nameDraft)
+            if let c = store.coordinate(for: url) { PlaceBook.remember(name, at: c) }
+            let p = position
+            _ = store.renameClip(url, place: name)
+            editing = .tape
+            nameDraft = tape?.name ?? ""
+            reloadCurrent()
+            seek(p)
+        }
     }
 
     private func applyPlace(_ place: String, to url: URL) {

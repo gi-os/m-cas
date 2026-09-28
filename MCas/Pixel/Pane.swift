@@ -1,5 +1,6 @@
 import UIKit
 import SwiftUI
+import AudioToolbox
 
 enum Screen: Int, CaseIterable {
     case deck, shelf, clips, label
@@ -14,8 +15,13 @@ enum Tool: String { case draw, erase, none }
 /// as wide as the screen — rather than drawn into a fixed box.
 struct Frame {
     let w: CGFloat, h: CGFloat
-    let top: CGFloat      // first usable row, below the Dynamic Island
+    let inset: CGFloat    // the status bar band: the Dynamic Island's row
     let bottom: CGFloat   // last usable row, above the home indicator
+    /// With a status band, the clock and battery live in it beside the island and the
+    /// screen starts right under it. Without one, they take the first row.
+    var hasBand: Bool { inset >= 14 }
+    var top: CGFloat { hasBand ? inset - 16 : inset }
+    var statusY: CGFloat { hasBand ? ((inset - 8) / 2).rounded() : inset + 5 }
     var left: CGFloat { 8 }
     var right: CGFloat { w - 8 }
     var width: CGFloat { w - 16 }
@@ -30,7 +36,7 @@ final class Pane: ObservableObject {
     var onEditName: (() -> Void)?
 
     private var canvas = PixelCanvas()
-    private var f = Frame(w: 136, h: 296, top: 0, bottom: 296)
+    private var f = Frame(w: 136, h: 296, inset: 0, bottom: 296)
     private let m = Machine.shared
     private var rot: Double = 0
     private var lastFrame = CACurrentMediaTime()
@@ -58,7 +64,7 @@ final class Pane: ObservableObject {
 
     func render(at t: Double, width: Int, height: Int, safeTop: Int, safeBottom: Int) -> CGImage? {
         if canvas.width != width || canvas.height != height { canvas = PixelCanvas(width: width, height: height) }
-        f = Frame(w: CGFloat(width), h: CGFloat(height), top: CGFloat(safeTop), bottom: CGFloat(height - safeBottom))
+        f = Frame(w: CGFloat(width), h: CGFloat(height), inset: CGFloat(safeTop), bottom: CGFloat(height - safeBottom))
         let now = CACurrentMediaTime()
         let dt = min(0.12, now - lastFrame)
         lastFrame = now
@@ -81,16 +87,19 @@ final class Pane: ObservableObject {
     // MARK: shared pieces
 
     private func chrome(_ c: CGContext, _ t: Double) {
-        let y = f.top + 5
-        Pix.text(Self.clockFormat.string(from: Date()), f.left + 1, y, Ink.cream)
+        let y = f.statusY
+        let clock = Self.clockFormat.string(from: Date())
+        if f.hasBand { Pix.text(clock, (f.w * 0.2).rounded(), y, Ink.cream, font: Pix.bold, align: .center) }
+        else { Pix.text(clock, f.left + 1, y, Ink.cream) }
         let level = UIDevice.current.batteryLevel
-        let bx = f.right - 17
+        let bx = f.hasBand ? (f.w * 0.8 - 7).rounded() : f.right - 17
         Pix.fill(c, bx, y + 1, 14, 7, Ink.cream); Pix.fill(c, bx + 14, y + 3, 1, 3, Ink.cream)
         Pix.fill(c, bx + 1, y + 2, 12, 5, Ink.ink)
         let cells = level < 0 ? 12 : max(1, Int((Float(12) * level).rounded()))
         Pix.fill(c, bx + 1, y + 2, CGFloat(cells), 5, level >= 0 && level < 0.2 ? Ink.red : Ink.teal)
         if m.recording && screen != .deck {
             let cx = f.w / 2
+            let y = f.top + 8
             Pix.rrect(c, cx - 32, y - 2, 64, 11, 6, Ink.ink)
             if Int(t / 0.4) % 2 == 1 { Pix.circle(c, cx - 25, y + 3.5, 2, Ink.red) }
             Pix.text("REC", cx - 20, y, Ink.red)
@@ -118,15 +127,22 @@ final class Pane: ObservableObject {
     }
 
     private var headerPill: CGRect { CGRect(x: f.right - 34, y: f.top + 22, width: 34, height: 13) }
+    private var bgPill: CGRect { CGRect(x: f.right - 34 - 4 - 38, y: f.top + 22, width: 38, height: 13) }
 
     // MARK: deck
 
     private var cas: CGRect { CGRect(x: f.left, y: f.top + 50, width: f.width, height: f.cassetteH) }
-    private var transport: CGRect { CGRect(x: f.left, y: f.tabTop - 44, width: f.width, height: 36) }
-    private func button(_ i: Int) -> CGPoint {
-        let fr: [CGFloat] = [0.19, 0.37, 0.63, 0.83]
-        return CGPoint(x: (f.left + f.width * fr[i]).rounded(), y: transport.midY.rounded())
+    private var transport: CGRect { CGRect(x: f.left, y: f.tabTop - 48, width: f.width, height: 40) }
+    /// Four tape-deck keys across the width: ◀◀  ▶  ●  ▶▶.
+    private func key(_ i: Int) -> CGRect {
+        let gap: CGFloat = 3
+        let w = ((transport.width - 10 - gap * 3) / 4).rounded(.down)
+        let x0 = transport.minX + (transport.width - (w * 4 + gap * 3)) / 2
+        return CGRect(x: (x0 + CGFloat(i) * (w + gap)).rounded(), y: transport.minY + 4, width: w, height: transport.height - 8)
     }
+    private var heldKey: Int?
+    private var keyDownAt: Double = 0
+    private var keyTimer: Timer?
 
     private func drawDeck(_ c: CGContext, _ t: Double) {
         Sky.draw(c, t, Ink.hex(0x283870), Ink.hex(0x141428), Ink.hex(0x1c2c40), in: f.full)
@@ -197,17 +213,41 @@ final class Pane: ObservableObject {
             Pix.fill(c, mx + CGFloat(i * 4), base - h, 3, h, frac > 0.84 ? Ink.red : frac > 0.68 ? Ink.yellow : Ink.teal)
         }
 
-        let tp = transport
-        Pix.rrect(c, tp.minX, tp.minY, tp.width, tp.height, 18, Ink.blue)
-        Pix.fill(c, tp.minX + 14, tp.minY + 1, tp.width - 28, 1, Ink.blue2)
-        let rew = button(0), play = button(1), rec = button(2), ff = button(3)
-        Pix.tri(c, rew.x - 3, rew.y, -1, Ink.cream); Pix.tri(c, rew.x + 3, rew.y, -1, Ink.cream)
-        Pix.tri(c, ff.x - 3, ff.y, 1, Ink.cream); Pix.tri(c, ff.x + 3, ff.y, 1, Ink.cream)
-        if m.playing { Pix.fill(c, play.x - 4, play.y - 5, 3, 10, Ink.cream); Pix.fill(c, play.x + 2, play.y - 5, 3, 10, Ink.cream) }
-        else { Pix.tri(c, play.x - 3, play.y, 1.4, Ink.cream) }
-        Pix.circle(c, rec.x, rec.y, 12, Ink.cream)
-        if m.recording { Pix.fill(c, rec.x - 5, rec.y - 5, 10, 10, Ink.red) } else { Pix.circle(c, rec.x, rec.y, 7, Ink.red) }
+        drawKeys(c)
         tabs(c)
+    }
+
+    private func drawKeys(_ c: CGContext) {
+        let tp = transport
+        Pix.rrect(c, tp.minX, tp.minY, tp.width, tp.height, 6, Ink.ink)
+        Pix.fill(c, tp.minX + 4, tp.minY + 2, tp.width - 8, 1, Ink.blue)
+        let down: [Bool] = [
+            heldKey == 0 || (m.holdRate ?? 0) < 0,
+            m.playing || heldKey == 1,
+            m.recording || heldKey == 2,
+            heldKey == 3 || (m.holdRate ?? 0) > 0
+        ]
+        for i in 0..<4 {
+            let r = key(i)
+            let sunk: CGFloat = down[i] ? 3 : 0
+            let lip: CGFloat = down[i] ? 2 : 5
+            let faceH = r.height - 5
+            let face = CGRect(x: r.minX, y: r.minY + sunk, width: r.width, height: faceH)
+            Pix.rrect(c, r.minX, face.maxY - 2, r.width, lip + 2, 3, Ink.dark)
+            let top: UIColor = i == 2 && m.recording ? Ink.red : (down[i] ? Ink.tan : Ink.cream)
+            Pix.rrect(c, face.minX, face.minY, face.width, face.height, 3, top)
+            if !down[i] { Pix.fill(c, face.minX + 3, face.minY + 1, face.width - 6, 1, UIColor.white.withAlphaComponent(0.6)) }
+            let cx = face.midX.rounded(), cy = face.midY.rounded()
+            let icon: UIColor = i == 2 && m.recording ? Ink.cream : Ink.dark
+            switch i {
+            case 0: Pix.tri(c, cx - 1, cy, -1, icon); Pix.tri(c, cx + 5, cy, -1, icon)
+            case 1:
+                if m.playing { Pix.fill(c, cx - 4, cy - 5, 3, 10, icon); Pix.fill(c, cx + 2, cy - 5, 3, 10, icon) }
+                else { Pix.tri(c, cx - 3, cy, 1.3, icon) }
+            case 2: Pix.circle(c, cx, cy, 5, i == 2 && m.recording ? Ink.cream : Ink.red)
+            default: Pix.tri(c, cx - 5, cy, 1, icon); Pix.tri(c, cx + 1, cy, 1, icon)
+            }
+        }
     }
 
     // MARK: shelf
@@ -229,6 +269,7 @@ final class Pane: ObservableObject {
         chrome(c, t)
         Pix.text("SHELF", f.left, f.top + 18, Ink.cream, font: Pix.big)
         if !m.recording { pill(c, headerPill, "+ NEW", Ink.teal, Ink.cream) }
+        pill(c, bgPill, m.blackBackground ? "SKY" : "BLACK", Ink.blue, Ink.cream)
         Pix.marquee(c, "TAP A TAPE TO LOAD IT", f.left, f.top + 40, maxW: f.width, Ink.grey, t: t)
         let h = f.cassetteH
         for slot in shelfLayout() {
@@ -330,6 +371,14 @@ final class Pane: ObservableObject {
         if m.playing { Pix.fill(c, pb.minX + 10, pb.minY + 4, 2, 8, Ink.cream); Pix.fill(c, pb.minX + 14, pb.minY + 4, 2, 8, Ink.cream) }
         else { Pix.poly(c, [CGPoint(x: pb.minX + 10, y: pb.minY + 4), CGPoint(x: pb.minX + 16, y: pb.minY + 8), CGPoint(x: pb.minX + 10, y: pb.minY + 12)], Ink.cream) }
         Pix.text(m.playing ? "PLAYING" : "PLAY FROM HERE", pb.midX + 6, pb.minY + 4, Ink.cream, align: .center)
+        if case .clip = m.editing {
+            let box = CGRect(x: f.left, y: headY - 20, width: f.width, height: 30)
+            Pix.rrect(c, box.minX - 1, box.minY - 1, box.width + 2, box.height + 2, 5, Ink.yellow)
+            Pix.rrect(c, box.minX, box.minY, box.width, box.height, 4, Ink.cream)
+            Pix.text("NAME THIS PLACE", box.minX + 4, box.minY + 4, Ink.brown)
+            let w = Pix.tail(c, m.nameDraft.uppercased(), box.minX + 4, box.minY + 16, maxW: box.width - 10, Ink.dark, font: Pix.bold)
+            if Int(t / 0.5) % 2 == 1 { Pix.fill(c, min(box.maxX - 4, box.minX + 5 + ceil(w)), box.minY + 15, 1, 9, Ink.dark) }
+        }
         tabs(c)
     }
 
@@ -361,7 +410,7 @@ final class Pane: ObservableObject {
         guard let tape = m.tape else { return }
         Pix.text("LABEL", f.left, f.top + 18, Ink.cream, font: Pix.big)
         pill(c, headerPill, "DONE", Ink.blue2, Ink.cream)
-        let name = m.nameDraft.isEmpty ? tape.name : m.nameDraft
+        let name = m.editing == .tape && !m.nameDraft.isEmpty ? m.nameDraft : tape.name
         Cassette.draw(c, editCas.minX, editCas.minY, editCas.width, editCas.height, name: name, label: tape.label,
                       ink: inkWorking ?? m.inks[tape.id], fraction: m.timeline.fraction(m.position), rot: rot, t: t)
         Pix.text("NAME", f.left, labelTop, Ink.grey)
@@ -405,7 +454,9 @@ final class Pane: ObservableObject {
         switch screen {
         case .deck: deckDown(p)
         case .shelf: shelfDown(p)
-        case .clips: gesture = .scroll; fling = 0
+        case .clips:
+            gesture = .scroll; fling = 0
+            startRenameTimer(at: p)
         case .label: labelDown(p)
         }
     }
@@ -424,6 +475,7 @@ final class Pane: ObservableObject {
                 windCarry -= CGFloat(dir) * 4
             }
         case .scroll:
+            if moved { renameTimer?.invalidate(); renameTimer = nil }
             let dy = p.y - lastPoint.y
             lastDy = dy
             scrollBy(-dy)
@@ -441,8 +493,10 @@ final class Pane: ObservableObject {
             stopPressTimer()
             if press.up(at: CACurrentMediaTime()) == .tap { m.togglePlay() }
         case .hold:
-            m.holdRate = nil
+            keyUp()
         case .scroll:
+            renameTimer?.invalidate(); renameTimer = nil
+            if renamedOnHold { renamedOnHold = false; return }
             if moved { fling = -lastDy }
             else if playBar.contains(p) { m.togglePlay() }
             else if p.y >= topV && p.y <= botV {
@@ -458,8 +512,26 @@ final class Pane: ObservableObject {
         }
     }
 
+    private var renameTimer: Timer?
+    private var renamedOnHold = false
+
+    /// Hold a clip to rename its place. The name sticks to that spot for later recordings.
+    private func startRenameTimer(at p: CGPoint) {
+        renameTimer?.invalidate()
+        renamedOnHold = false
+        renameTimer = Timer.scheduledTimer(withTimeInterval: 0.55, repeats: false) { [weak self] _ in
+            guard let self, !self.moved, p.y >= self.topV, p.y <= self.botV else { return }
+            let off = self.headY - self.posToY(self.m.position)
+            guard let r = self.rows().first(where: { p.y - off >= $0.y && p.y - off < $0.y + $0.h + 2 }) else { return }
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            self.renamedOnHold = true
+            self.m.beginClipRename(r.index)
+            self.onEditName?()
+        }
+    }
+
     private func switchTo(_ s: Screen) {
-        if screen == .label && s != .label { m.renameCurrent(m.nameDraft) }
+        if screen == .label && s != .label && m.editing == .tape { m.renameCurrent(m.nameDraft) }
         screen = s
     }
 
@@ -472,10 +544,42 @@ final class Pane: ObservableObject {
             startPressTimer()
         } else if headerPill.insetBy(dx: -4, dy: -4).contains(p) && !m.recording {
             switchTo(.shelf)
-        } else if hit(p, button(1), 11) { m.togglePlay() }
-        else if hit(p, button(2), 15) { m.toggleRecording() }
-        else if hit(p, button(0), 11) { gesture = .hold; m.holdRate = -4 }
-        else if hit(p, button(3), 11) { gesture = .hold; m.holdRate = 4 }
+        } else if let i = (0..<4).first(where: { key($0).insetBy(dx: -1, dy: -4).contains(p) }) {
+            keyDown(i)
+        }
+    }
+
+    /// Keys clunk down with a haptic and a click. ▶ and ● act on the press; ◀◀ and ▶▶ skip a
+    /// clip on a tap and wind while held, faster the longer you hold.
+    private func keyDown(_ i: Int) {
+        heldKey = i
+        gesture = .hold
+        keyDownAt = CACurrentMediaTime()
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 1)
+        AudioServicesPlaySystemSound(1104)
+        switch i {
+        case 1: m.togglePlay()
+        case 2: m.toggleRecording()
+        default:
+            let dir: Double = i == 0 ? -1 : 1
+            keyTimer?.invalidate()
+            keyTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                let held = CACurrentMediaTime() - self.keyDownAt
+                if held >= 0.25 { self.m.holdRate = dir * (held > 1.5 ? 8 : 4) }
+            }
+        }
+    }
+
+    private func keyUp() {
+        guard let i = heldKey else { return }
+        keyTimer?.invalidate(); keyTimer = nil
+        if i == 0 || i == 3 {
+            if CACurrentMediaTime() - keyDownAt < 0.25 { m.skip(i == 0 ? -1 : 1) }
+            m.holdRate = nil
+        }
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.6)
+        heldKey = nil
     }
 
     private func startPressTimer() {
@@ -493,7 +597,8 @@ final class Pane: ObservableObject {
     private func stopPressTimer() { pressTimer?.invalidate(); pressTimer = nil }
 
     private func shelfDown(_ p: CGPoint) {
-        if headerPill.insetBy(dx: -4, dy: -4).contains(p) && !m.recording { m.newTape(); return }
+        if headerPill.insetBy(dx: -2, dy: -4).contains(p) && !m.recording { m.newTape(); return }
+        if bgPill.insetBy(dx: -2, dy: -4).contains(p) { m.blackBackground.toggle(); return }
         let h = f.cassetteH
         for slot in shelfLayout().reversed() where p.x >= f.left && p.x <= f.right && p.y >= slot.y && p.y <= slot.y + (slot.front ? h : slot.step) {
             if !m.recording { m.select(slot.index) }
@@ -513,7 +618,7 @@ final class Pane: ObservableObject {
         for (i, item) in tools.enumerated() where toolRect(i).contains(p) {
             if let tl = item.0 { tool = tool == tl ? .none : tl } else { m.setInk(nil, save: true) }
         }
-        if nameBox.contains(p) { onEditName?() }
+        if nameBox.contains(p) { m.beginTapeRename(); onEditName?() }
         if headerPill.insetBy(dx: -4, dy: -4).contains(p) { switchTo(.shelf) }
     }
 
