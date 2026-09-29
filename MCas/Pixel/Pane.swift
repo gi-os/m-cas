@@ -607,6 +607,13 @@ final class Pane: ObservableObject {
         return order.enumerated().map { k, i in ShelfSlot(index: i, y: y0 + CGFloat(k) * step, front: k == n - 1, step: step) }
     }
 
+    /// Where each tape is drawn right now: it glides to its slot, so picking a tape pulls it
+    /// out of the stack and slides it to the front while the rest close the gap.
+    private var shelfY: [Int: CGFloat] = [:]
+    private var shelfClock: Double = 0
+    private var picked: Int?
+    private var pickedAt: Double = -10
+
     private func drawShelf(_ c: CGContext, _ t: Double) {
         Sky.draw(c, t, Ink.navy, Ink.hex(0x202850), Ink.blue, in: f.full)
         chrome(c, t)
@@ -615,14 +622,26 @@ final class Pane: ObservableObject {
         drawGear(c, bgPill)
         Pix.marquee(c, "TAP A TAPE TO LOAD IT", f.left, f.top + 40, maxW: f.width, Ink.grey, t: t)
         let h = f.cassetteH
+        let now = CACurrentMediaTime()
+        let dt = min(0.05, max(0, now - shelfClock)); shelfClock = now
+        let pickP = (now - pickedAt) / 0.5
         for slot in shelfLayout() {
             let tape = m.tapes[slot.index]
-            Pix.rrect(c, f.left + 1, slot.y + 3, f.width + 1, h + 1, 6, Ink.ink.withAlphaComponent(0.7))
+            var y = shelfY[slot.index] ?? slot.y
+            y += (slot.y - y) * CGFloat(min(1, dt * 12))
+            if abs(slot.y - y) < 0.5 { y = slot.y }
+            shelfY[slot.index] = y
+            y = y.rounded()
+            // The picked tape comes out sideways first, then drops into the front slot.
+            var x = f.left
+            if slot.index == picked && pickP < 1 { x += (CGFloat(sin(pickP * .pi)) * f.width * 0.22).rounded() }
+            let lifted = slot.index == picked && pickP < 1
+            Pix.rrect(c, x + 1, y + (lifted ? 6 : 3), f.width + 1, h + 1, 6, Ink.ink.withAlphaComponent(lifted ? 0.85 : 0.7))
             let frac = slot.front ? m.timeline.fraction(m.position) : 0.5
-            Cassette.draw(c, f.left, slot.y, f.width, h, name: tape.name, label: tape.label, ink: m.inks[tape.id], fraction: frac,
+            Cassette.draw(c, x, y, f.width, h, name: tape.name, label: tape.label, ink: m.inks[tape.id], fraction: frac,
                           rot: slot.front ? rot : 0, duration: Pix.short(m.totalSeconds(tape)), t: t + Double(slot.index))
-            if slot.front && Int(t / 0.45) % 2 == 1 {
-                let my = slot.y + h / 2
+            if slot.front && !lifted && Int(t / 0.45) % 2 == 1 {
+                let my = y + h / 2
                 Pix.poly(c, [CGPoint(x: 1, y: my - 4), CGPoint(x: 5, y: my), CGPoint(x: 1, y: my + 4)], Ink.yellow)
             }
         }
@@ -1329,7 +1348,11 @@ final class Pane: ObservableObject {
         if bgPill.insetBy(dx: -4, dy: -4).contains(p) { switchTo(.settings); return }
         let h = f.cassetteH
         for slot in shelfLayout().reversed() where p.x >= f.left && p.x <= f.right && p.y >= slot.y && p.y <= slot.y + (slot.front ? h : slot.step) {
-            if !m.recording { m.select(slot.index) }
+            if !m.recording && !slot.front {
+                picked = slot.index; pickedAt = CACurrentMediaTime()
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                m.select(slot.index)
+            }
             return
         }
     }
