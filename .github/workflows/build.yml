@@ -12,12 +12,21 @@ on:
       - '.github/workflows/release.yml'
       - 'docs/**'
       - 'fastlane/metadata/**'
+  # TEMPORARY, until this app is on the App Store: TestFlight builds expire after 90 days, so
+  # main is rebuilt as-is on the 1st of every month and a fresh build is always on the phone.
+  # Delete this block (and the keepalive step below) once it's published.
+  schedule:
+    - cron: "17 9 1 * *"
   workflow_dispatch:
 
 # One upload at a time per repo; the build number is the run number.
 concurrency:
   group: testflight
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write   # the keepalive step below
 
 jobs:
   ship:
@@ -31,6 +40,12 @@ jobs:
       MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_AUTH }}
       BUILD_NUMBER: ${{ github.run_number }}
     steps:
+      # GitHub disables scheduled workflows after 60 days without a commit, which would
+      # silently stop the monthly rebuild. Re-enabling on every run resets that clock.
+      - name: Keep the monthly schedule alive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/build.yml/enable" || true
       - uses: actions/checkout@v4
       - name: Select Xcode
         run: bash ci/select-xcode.sh
