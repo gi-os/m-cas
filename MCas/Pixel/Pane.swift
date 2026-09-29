@@ -1185,7 +1185,15 @@ final class Pane: ObservableObject {
         switch gesture {
         case .wind:
             if moved { press.cancel(); stopPressTimer() }
-            windBy(p.x - lastPoint.x, pixelsPerNotch: 4)
+            if screen == .deck && deckWave && !m.recording {
+                // The waveform is tape under your finger: it moves with the drag, so pulling
+                // right goes back in time, the same as the editor.
+                let before = Int(m.position)
+                m.seek(max(0, min(m.timeline.total, m.position - Double((p.x - lastPoint.x) / deckZoom))))
+                if Int(m.position) != before { haptic.selectionChanged() }
+            } else {
+                windBy(p.x - lastPoint.x, pixelsPerNotch: 4)
+            }
         case .scroll:
             if moved { renameTimer?.invalidate(); renameTimer = nil }
             let dy = p.y - lastPoint.y
