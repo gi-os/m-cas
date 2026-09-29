@@ -176,7 +176,9 @@ final class Pane: ObservableObject {
                           fraction: tl.fraction(m.position), rot: rot, t: t)
         }
 
-        var y = cas.maxY + 11
+        // The counter sits right under the cassette, where a deck's would be.
+        var y = cas.maxY + 8
+        y = drawCounter(c, y, t) + 9
         if m.recording {
             Pix.text("RECORDING", f.left, y, Ink.red, font: Pix.bold)
             Pix.marquee(c, mmss(m.recSeconds) + (m.mark != nil ? "  OVER THE TAPE" : "  ONTO THE END"), f.left, y + 11, maxW: f.width, Ink.grey, t: t)
@@ -211,7 +213,7 @@ final class Pane: ObservableObject {
         drawScrubber(c, y)
         y += 14
         let r = m.rate
-        let counterBottom = drawCounter(c, y - 2, t)
+        let counterBottom = y - 2
 
         // Level meter just above the transport; the space between grows on taller screens.
         let bars = Int((f.width - 16) / 4)
