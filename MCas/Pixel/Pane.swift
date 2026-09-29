@@ -465,8 +465,10 @@ final class Pane: ObservableObject {
             c.saveGState(); c.clip(to: box.insetBy(dx: 1, dy: 1))
             let p = min(1, (now - wheelAt[i]) / 0.16)
             let roll = CGFloat((1 - p) * Double(bh)).rounded()
-            if roll > 0 { Pix.text("\(wheelFrom[i])", box.midX + 1, box.minY + 2 - (bh - roll), Ink.cream, font: Pix.big, align: .center) }
-            Pix.text("\(digits[i])", box.midX + 1, box.minY + 2 + roll, Ink.cream, font: Pix.big, align: .center)
+            // Silkscreen's digits are 10px tall and start 6.5px into the line: drawn from
+            // minY - 1 they sit centered in the 19px wheel, clear of the dark bands.
+            if roll > 0 { Pix.text("\(wheelFrom[i])", box.midX + 1, box.minY - 1 - (bh - roll), Ink.cream, font: Pix.big, align: .center) }
+            Pix.text("\(digits[i])", box.midX + 1, box.minY - 1 + roll, Ink.cream, font: Pix.big, align: .center)
             c.restoreGState()
             // the wheel's curve: a darker band top and bottom
             Pix.fill(c, box.minX + 1, box.minY + 1, box.width - 2, 2, Ink.navy)
