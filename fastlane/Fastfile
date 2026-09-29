@@ -6,6 +6,28 @@ def app_env
 end
 
 platform :ios do
+  # Attach the newest processed TestFlight build to the version waiting in App Store
+  # Connect. That's what makes App Store Connect show the app's icon; nothing is submitted.
+  lane :attach do
+    env = app_env
+    app_store_connect_api_key(key_id: ENV["ASC_KEY_ID"], issuer_id: ENV["ASC_ISSUER_ID"], key_content: ENV["ASC_KEY_P8"], in_house: false)
+    bundle = env["TARGETS"].split(",").first.split(":").last
+    app = Spaceship::ConnectAPI::App.find(bundle)
+    UI.user_error!("No App Store Connect app for #{bundle}") unless app
+    version = app.get_edit_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS)
+    UI.user_error!("No version waiting in App Store Connect") unless version
+    builds = Spaceship::ConnectAPI::Build.all(app_id: app.id, sort: "-uploadedDate", limit: 20)
+    build = builds.find { |b| b.processing_state == "VALID" && b.app_version == version.version_string } ||
+            builds.find { |b| b.processing_state == "VALID" }
+    UI.user_error!("No processed build yet") unless build
+    if build.app_version != version.version_string
+      UI.important("Newest build is #{build.app_version}; renaming the waiting version #{version.version_string} to match")
+      version.update(attributes: { versionString: build.app_version })
+    end
+    version.select_build(build_id: build.id)
+    UI.success("Attached #{build.app_version} (#{build.version}) to the App Store version")
+  end
+
   lane :ship do
     env = app_env
     scheme = env["SCHEME"]
@@ -164,5 +186,6 @@ platform :ios do
         content_rights_has_rights: true
       }
     )
+    attach unless ENV["SUBMIT"] == "true"
   end
 end

@@ -1,0 +1,20 @@
+name: Attach build
+# Puts the newest TestFlight build on the App Store version (shows the icon in App Store
+# Connect). Submits nothing.
+on:
+  workflow_dispatch:
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - run: bundle exec fastlane ios attach
