@@ -700,9 +700,10 @@ final class Pane: ObservableObject {
             while yy < y + r.h - 2 { Pix.fill(c, f.left + 5, yy, 2, 2, Ink.dark); yy += 6 }
             Pix.rrect(c, cardX, y, cardW, r.h, 4, under ? Ink.cream : Ink.blue)
             let tc = under ? Ink.dark : Ink.cream, mc = under ? Ink.brown : Ink.grey
-            Pix.marquee(c, clip.name.uppercased(), cardX + 4, y + 4, maxW: cardW - (under ? 44 : 8), tc, font: Pix.bold, t: t + Double(r.clip))
+            let full = under && (m.hasFull(r.clip) || m.solo == r.clip)
+            Pix.marquee(c, clip.name.uppercased(), cardX + 4, y + 4, maxW: cardW - (full ? 44 : 8), tc, font: Pix.bold, t: t + Double(r.clip))
             let dw = Pix.text(Pix.short(r.seconds), f.right - 4, y + 14, mc, align: .right)
-            if under {
+            if full {
                 let playingFull = m.solo == r.clip
                 let br = CGRect(x: f.right - 34, y: y + 3, width: 30, height: 10)
                 Pix.rrect(c, br.minX, br.minY, br.width, br.height, 4, playingFull ? Ink.purple : Ink.dark)

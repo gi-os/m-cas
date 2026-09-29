@@ -516,6 +516,17 @@ final class Machine: ObservableObject {
         if wasPlaying { playing = true }
     }
 
+    /// Whether FULL has anything to add: the file holds audio the tape doesn't play,
+    /// because it's trimmed or a take records over part of it. A clip the tape already
+    /// plays end to end, or one too short to play, gets no FULL button.
+    func hasFull(_ i: Int) -> Bool {
+        guard timeline.clips.indices.contains(i), mappedAll.indices.contains(i) else { return false }
+        let whole = timeline.clips[i].seconds
+        guard whole >= 0.5 else { return false }
+        let heard = timeline.segments.filter { $0.clip == i }.reduce(0) { $0 + $1.length }
+        return whole - heard > 0.25
+    }
+
     /// The solo clip's playhead, in seconds into its file.
     var soloPosition: Double { head.position }
 
